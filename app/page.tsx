@@ -1,9 +1,10 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { browserSupabase } from "@/lib/supabase-browser";
 
-const dailyGoalOz = 128;
+const dailyGoalOz = 96;
 const bottleSizeOz = 25;
 
 type WaterEntry = {
@@ -30,11 +31,15 @@ function formatToday() {
 }
 
 export default function Home() {
+  const router = useRouter();
+
   const [entries, setEntries] = useState<WaterEntry[]>([]);
+  const [accessToken, setAccessToken] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [errorMessage, setErrorMessage] = useState(""); 
+  const [errorMessage, setErrorMessage] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
 
   const currentOz = entries.reduce(
     (total, entry) => total + Number(entry.amount_oz),
@@ -47,10 +52,39 @@ export default function Home() {
     100,
   );
 
+  async function authorizedFetch(
+    path: string,
+    options: RequestInit = {},
+    token = accessToken,
+  ) {
+    return fetch(path, {
+      ...options,
+      headers: {
+        ...options.headers,
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  }
+
   useEffect(() => {
-    async function loadEntries() {
+    async function loadDashboard() {
+      const {
+        data: { session },
+      } = await browserSupabase.auth.getSession();
+
+      if (!session) {
+        router.replace("/login");
+        return;
+      }
+
+      setAccessToken(session.access_token);
+
       try {
-        const response = await fetch("/api/water-log");
+        const response = await authorizedFetch(
+          "/api/water-log",
+          {},
+          session.access_token,
+        );
 
         if (!response.ok) {
           throw new Error("Unable to load water entries.");
@@ -65,22 +99,23 @@ export default function Home() {
       }
     }
 
-    loadEntries();
-  }, []);
+    loadDashboard();
+  }, [router]);
 
-  async function logBottle() {
+  async function logManualBottle() {
     setIsSaving(true);
     setErrorMessage("");
+    setStatusMessage("");
 
     try {
-      const response = await fetch("/api/water-log", {
+      const response = await authorizedFetch("/api/water-log", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
           amountOz: bottleSizeOz,
-          source: "nfc",
+          source: "manual",
           bottleName: "CEMC",
         }),
       });
@@ -91,7 +126,12 @@ export default function Home() {
 
       const data = await response.json();
 
-      setEntries((currentEntries) => [data.entry, ...currentEntries]);
+      if (data.duplicate) {
+        setStatusMessage("Duplicate log ignored.");
+      } else {
+        setEntries((currentEntries) => [data.entry, ...currentEntries]);
+        setStatusMessage("Logged 25 oz manually.");
+      }
     } catch {
       setErrorMessage("Could not save this bottle. Please try again.");
     } finally {
@@ -100,50 +140,66 @@ export default function Home() {
   }
 
   async function undoLastEntry() {
-  const mostRecentEntry = entries[0];
+    const mostRecentEntry = entries[0];
 
-  if (!mostRecentEntry) {
-    return;
-  }
-
-  setIsDeleting(true);
-  setErrorMessage("");
-
-  try {
-    const response = await fetch(
-      `/api/water-log?id=${mostRecentEntry.id}`,
-      {
-        method: "DELETE",
-      },
-    );
-
-    if (!response.ok) {
-      throw new Error("Unable to delete water entry.");
+    if (!mostRecentEntry) {
+      return;
     }
 
-    setEntries((currentEntries) =>
-      currentEntries.filter((entry) => entry.id !== mostRecentEntry.id),
-    );
-  } catch {
-    setErrorMessage("Could not undo this entry. Please try again.");
-  } finally {
-    setIsDeleting(false);
-  }
-}
+    setIsDeleting(true);
+    setErrorMessage("");
+    setStatusMessage("");
 
-  
+    try {
+      const response = await authorizedFetch(
+        `/api/water-log?id=${mostRecentEntry.id}`,
+        {
+          method: "DELETE",
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error("Unable to delete water entry.");
+      }
+
+      setEntries((currentEntries) =>
+        currentEntries.filter((entry) => entry.id !== mostRecentEntry.id),
+      );
+
+      setStatusMessage("Most recent entry removed.");
+    } catch {
+      setErrorMessage("Could not undo this entry. Please try again.");
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
+  async function signOut() {
+    await browserSupabase.auth.signOut();
+    router.replace("/login");
+  }
 
   return (
     <main className="min-h-screen bg-slate-50 px-5 py-10 text-slate-900">
       <div className="mx-auto max-w-md">
-        <header className="mb-8">
-          <p className="text-sm font-medium text-sky-600">Water Tracker</p>
-          <h1 className="mt-1 text-3xl font-bold tracking-tight">
-            {formatToday()}
-          </h1>
-          <p className="mt-2 text-slate-600">
-            Tap your bottle&apos;s NFC tag when you finish a refill.
-          </p>
+        <header className="mb-8 flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-sky-600">Water Tracker</p>
+            <h1 className="mt-1 text-3xl font-bold tracking-tight">
+              {formatToday()}
+            </h1>
+            <p className="mt-2 text-slate-600">
+              Tap your CEMC bottle tag after each 25 oz refill.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={signOut}
+            className="text-sm font-semibold text-slate-500 underline underline-offset-4 hover:text-slate-900"
+          >
+            Sign out
+          </button>
         </header>
 
         <section className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
@@ -192,20 +248,26 @@ export default function Home() {
             <div>
               <p className="text-3xl font-bold">{bottleSizeOz} oz</p>
               <p className="mt-1 text-sm text-sky-100">
-                Temporary button that simulates an NFC tap.
+                NFC tap logging is protected from duplicate scans.
               </p>
             </div>
 
             <button
               type="button"
-              onClick={logBottle}
-              disabled={isSaving}
+              onClick={logManualBottle}
+              disabled={isSaving || !accessToken}
               className="rounded-xl bg-white px-4 py-3 text-sm font-bold text-sky-700 transition hover:bg-sky-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isSaving ? "Saving..." : `Log ${bottleSizeOz} oz`}
+              {isSaving ? "Saving..." : "Log manually"}
             </button>
           </div>
         </section>
+
+        {statusMessage && (
+          <p className="mt-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200">
+            {statusMessage}
+          </p>
+        )}
 
         {errorMessage && (
           <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700 ring-1 ring-red-200">
@@ -246,16 +308,16 @@ export default function Home() {
               </div>
             ))}
           </div>
-                    <button
+
+          <button
             type="button"
             onClick={undoLastEntry}
-            disabled={entries.length === 0 || isDeleting}
+            disabled={entries.length === 0 || isDeleting || !accessToken}
             className="mt-4 text-sm font-semibold text-slate-500 underline underline-offset-4 transition hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isDeleting ? "Undoing..." : "Undo most recent entry"}
           </button>
         </section>
-
       </div>
     </main>
   );
