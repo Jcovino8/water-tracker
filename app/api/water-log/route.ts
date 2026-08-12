@@ -1,6 +1,28 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
+const expectedNfcToken = process.env.WATER_TRACKER_NFC_TOKEN?.trim();
+
+function requireNfcToken(request: Request) {
+  if (!expectedNfcToken) {
+    return NextResponse.json(
+      { error: "Server NFC token is not configured." },
+      { status: 500 },
+    );
+  }
+
+  const providedToken = request.headers.get("x-water-tracker-token");
+
+  if (providedToken !== expectedNfcToken) {
+    return NextResponse.json(
+      { error: "Invalid or missing NFC token." },
+      { status: 401 },
+    );
+  }
+
+  return null;
+}
+
 type WaterLogRequest = {
   amountOz?: unknown;
   source?: unknown;
@@ -8,6 +30,12 @@ type WaterLogRequest = {
 };
 
 export async function POST(request: Request) {
+  const authorizationError = requireNfcToken(request);
+
+  if (authorizationError) {
+    return authorizationError;
+  }
+
   let body: WaterLogRequest;
 
   try {
@@ -101,6 +129,12 @@ export async function GET() {
 
 
 export async function DELETE(request: Request) {
+  const authorizationError = requireNfcToken(request);
+
+  if (authorizationError) {
+    return authorizationError;
+  }
+
   const { searchParams } = new URL(request.url);
   const entryId = searchParams.get("id");
 

@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 
 const dailyGoalOz = 128;
-const bottleSizeOz = 26;
+const bottleSizeOz = 25;
 
 type WaterEntry = {
   id: string;
@@ -81,7 +81,7 @@ export default function Home() {
         body: JSON.stringify({
           amountOz: bottleSizeOz,
           source: "nfc",
-          bottleName: "Yeti",
+          bottleName: "CEMC",
         }),
       });
 
@@ -186,7 +186,7 @@ export default function Home() {
         </section>
 
         <section className="mt-6 rounded-2xl bg-sky-600 p-5 text-white shadow-sm">
-          <p className="text-sm font-medium text-sky-100">Yeti NFC bottle</p>
+          <p className="text-sm font-medium text-sky-100">CEMC NFC bottle</p>
 
           <div className="mt-2 flex items-end justify-between gap-4">
             <div>
