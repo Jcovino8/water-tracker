@@ -76,7 +76,27 @@ export async function GET(request: Request) {
     return unauthorizedResponse();
   }
 
+  const { searchParams } = new URL(request.url);
+  const daysParam = searchParams.get("days") ?? "1";
+  const days = Number(daysParam);
+
+  if (!Number.isInteger(days) || days < 1 || days > 30) {
+    return NextResponse.json(
+      { error: "days must be a whole number between 1 and 30." },
+      { status: 400 },
+    );
+  }
+
   const todayEastern = getEasternDateKey(new Date().toISOString());
+
+  const easternDates = new Set<string>();
+  const cursor = new Date(`${todayEastern}T12:00:00.000Z`);
+
+  for (let offset = 0; offset < days; offset += 1) {
+    const dateKey = cursor.toISOString().slice(0, 10);
+    easternDates.add(dateKey);
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
 
   const { data, error } = await supabase
     .from("water_entries")
@@ -92,11 +112,14 @@ export async function GET(request: Request) {
     );
   }
 
-  const todayEntries = data.filter(
-    (entry) => getEasternDateKey(entry.created_at) === todayEastern,
+  const entries = data.filter((entry) =>
+    easternDates.has(getEasternDateKey(entry.created_at)),
   );
 
-  return NextResponse.json({ entries: todayEntries });
+  return NextResponse.json({
+    days,
+    entries,
+  });
 }
 
 export async function POST(request: Request) {
