@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useState } from "react";
@@ -9,6 +10,8 @@ export default function AuthCallbackPage() {
   const [message, setMessage] = useState("Signing you in…");
 
   useEffect(() => {
+    let cancelled = false;
+
     async function completeSignIn() {
       const queryParams = new URLSearchParams(window.location.search);
       const hashParams = new URLSearchParams(
@@ -30,26 +33,56 @@ export default function AuthCallbackPage() {
 
       const code = queryParams.get("code");
 
-      if (!code) {
-        setMessage(
-          "This sign-in link is invalid or has expired. Return to the login page and request a new link.",
-        );
-        return;
+      if (code) {
+        const { error } =
+          await browserSupabase.auth.exchangeCodeForSession(code);
+
+        if (error) {
+          setMessage(
+            `${error.message} Return to the login page and request a new sign-in link.`,
+          );
+          return;
+        }
+      } else {
+        const accessToken = hashParams.get("access_token");
+        const refreshToken = hashParams.get("refresh_token");
+
+        if (!accessToken || !refreshToken) {
+          setMessage(
+            "This sign-in link is invalid or has expired. Return to the login page and request a new link.",
+          );
+          return;
+        }
+
+        const { error } = await browserSupabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+
+        if (error) {
+          setMessage(
+            `${error.message} Return to the login page and request a new sign-in link.`,
+          );
+          return;
+        }
       }
 
-      const { error } = await browserSupabase.auth.exchangeCodeForSession(code);
+      window.history.replaceState(
+        {},
+        document.title,
+        window.location.pathname,
+      );
 
-      if (error) {
-        setMessage(
-          `${error.message} Return to the login page and request a new sign-in link.`,
-        );
-        return;
+      if (!cancelled) {
+        router.replace("/");
       }
-
-      router.replace("/");
     }
 
     completeSignIn();
+
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   return (
