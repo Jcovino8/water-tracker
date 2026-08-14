@@ -6,11 +6,46 @@ const ownerEmail = process.env.WATER_TRACKER_OWNER_EMAIL?.trim().toLowerCase();
 
 type AuthorizationType = "nfc" | "owner";
 
+type AuthorizedUser = {
+  id: string;
+  email: string;
+};
+
 type WaterLogRequest = {
   amountOz?: unknown;
   source?: unknown;
   bottleName?: unknown;
 };
+
+async function getOwnerUser(
+  request: Request,
+): Promise<AuthorizedUser | null> {
+  const authorizationHeader = request.headers.get("authorization");
+
+  if (!authorizationHeader?.startsWith("Bearer ") || !ownerEmail) {
+    return null;
+  }
+
+  const accessToken = authorizationHeader.slice("Bearer ".length);
+
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser(accessToken);
+
+  if (error || !user?.id || !user.email) {
+    return null;
+  }
+
+  if (user.email.toLowerCase() !== ownerEmail) {
+    return null;
+  }
+
+  return {
+    id: user.id,
+    email: user.email,
+  };
+}
 
 async function getAuthorizationType(
   request: Request,
@@ -26,24 +61,48 @@ async function getAuthorizationType(
     return "nfc";
   }
 
-  const authorizationHeader = request.headers.get("authorization");
+  const ownerUser = await getOwnerUser(request);
 
-  if (!authorizationHeader?.startsWith("Bearer ") || !ownerEmail) {
-    return null;
+  return ownerUser ? "owner" : null;
+}
+
+async function getEntryOwner(
+  request: Request,
+  authorizationType: AuthorizationType,
+): Promise<AuthorizedUser | null> {
+  if (authorizationType === "owner") {
+    return getOwnerUser(request);
   }
 
-  const accessToken = authorizationHeader.slice("Bearer ".length);
+  if (!ownerEmail) {
+    return null;
+  }
 
   const {
-    data: { user },
+    data: { users },
     error,
-  } = await supabase.auth.getUser(accessToken);
+  } = await supabase.auth.admin.listUsers({
+    page: 1,
+    perPage: 100,
+  });
 
-  if (error || !user?.email) {
+  if (error) {
+    console.error("Unable to find NFC entry owner:", error);
     return null;
   }
 
-  return user.email.toLowerCase() === ownerEmail ? "owner" : null;
+  const owner = users.find(
+    (user) => user.email?.toLowerCase() === ownerEmail,
+  );
+
+  if (!owner?.id || !owner.email) {
+    return null;
+  }
+
+  return {
+    id: owner.id,
+    email: owner.email,
+  };
 }
 
 function unauthorizedResponse() {
@@ -70,9 +129,9 @@ function getEasternDateKey(timestamp: string) {
 }
 
 export async function GET(request: Request) {
-  const authorizationType = await getAuthorizationType(request, false);
+  const ownerUser = await getOwnerUser(request);
 
-  if (authorizationType !== "owner") {
+  if (!ownerUser) {
     return unauthorizedResponse();
   }
 
@@ -101,6 +160,7 @@ export async function GET(request: Request) {
   const { data, error } = await supabase
     .from("water_entries")
     .select("id, created_at, amount_oz, source, bottle_name")
+    .eq("user_id", ownerUser.id)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -129,6 +189,15 @@ export async function POST(request: Request) {
     return unauthorizedResponse();
   }
 
+  const entryOwner = await getEntryOwner(request, authorizationType);
+
+  if (!entryOwner) {
+    return NextResponse.json(
+      { error: "Unable to determine the owner of this water entry." },
+      { status: 500 },
+    );
+  }
+
   let body: WaterLogRequest;
 
   try {
@@ -141,6 +210,7 @@ export async function POST(request: Request) {
   }
 
   const amountOz = Number(body.amountOz);
+
   const bottleName =
     typeof body.bottleName === "string" && body.bottleName.trim()
       ? body.bottleName.trim()
@@ -165,6 +235,7 @@ export async function POST(request: Request) {
   const { data: recentEntries, error: duplicateCheckError } = await supabase
     .from("water_entries")
     .select("id, created_at, amount_oz, source, bottle_name")
+    .eq("user_id", entryOwner.id)
     .eq("amount_oz", amountOz)
     .eq("source", source)
     .eq("bottle_name", bottleName)
@@ -191,6 +262,7 @@ export async function POST(request: Request) {
   const { data, error } = await supabase
     .from("water_entries")
     .insert({
+      user_id: entryOwner.id,
       amount_oz: amountOz,
       source,
       bottle_name: bottleName,
@@ -217,9 +289,9 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const authorizationType = await getAuthorizationType(request, false);
+  const ownerUser = await getOwnerUser(request);
 
-  if (authorizationType !== "owner") {
+  if (!ownerUser) {
     return unauthorizedResponse();
   }
 
@@ -237,6 +309,7 @@ export async function DELETE(request: Request) {
     .from("water_entries")
     .delete()
     .eq("id", entryId)
+    .eq("user_id", ownerUser.id)
     .select("id")
     .single();
 
