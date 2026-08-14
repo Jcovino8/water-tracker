@@ -1,11 +1,10 @@
-
 "use client";
 
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { browserSupabase } from "@/lib/supabase-browser";
 
-const dailyGoalOz = 96;
-const bottleSizeOz = 25;
+const defaultDailyGoalOz = 96;
+const defaultBottleSizeOz = 25;
 
 type WaterEntry = {
   id: string;
@@ -13,6 +12,21 @@ type WaterEntry = {
   amount_oz: number;
   source: "nfc" | "manual";
   bottle_name: string;
+};
+
+type TrackerSettings = {
+  dailyGoalOz: number;
+  bottleSizeOz: number;
+  wakeTime: string;
+  sleepTime: string;
+};
+
+type TrackerSettingsApiResponse = {
+  daily_goal_oz: number;
+  bottle_size_oz: number;
+  wake_time: string;
+  sleep_time: string;
+  updated_at: string;
 };
 
 function formatTime(timestamp: string) {
@@ -49,6 +63,17 @@ function getEasternDateKey(value: string | Date) {
   return `${year}-${month}-${day}`;
 }
 
+function normalizeSettings(
+  settings: TrackerSettingsApiResponse,
+): TrackerSettings {
+  return {
+    dailyGoalOz: Number(settings.daily_goal_oz),
+    bottleSizeOz: Number(settings.bottle_size_oz),
+    wakeTime: settings.wake_time.slice(0, 5),
+    sleepTime: settings.sleep_time.slice(0, 5),
+  };
+}
+
 async function authorizedFetch(
   path: string,
   accessToken: string,
@@ -67,10 +92,26 @@ export default function Home() {
   const [entries, setEntries] = useState<WaterEntry[]>([]);
   const [accessToken, setAccessToken] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
+  const [isSavingEntry, setIsSavingEntry] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
+
+  const [settings, setSettings] = useState<TrackerSettings>({
+    dailyGoalOz: defaultDailyGoalOz,
+    bottleSizeOz: defaultBottleSizeOz,
+    wakeTime: "07:00",
+    sleepTime: "23:00",
+  });
+
+  const [draftSettings, setDraftSettings] = useState<TrackerSettings>({
+    dailyGoalOz: defaultDailyGoalOz,
+    bottleSizeOz: defaultBottleSizeOz,
+    wakeTime: "07:00",
+    sleepTime: "23:00",
+  });
 
   const todayEastern = getEasternDateKey(new Date());
 
@@ -83,10 +124,10 @@ export default function Home() {
     0,
   );
 
-  const remainingOz = Math.max(dailyGoalOz - currentOz, 0);
+  const remainingOz = Math.max(settings.dailyGoalOz - currentOz, 0);
 
   const progressPercent = Math.min(
-    Math.round((currentOz / dailyGoalOz) * 100),
+    Math.round((currentOz / settings.dailyGoalOz) * 100),
     100,
   );
 
@@ -131,7 +172,7 @@ export default function Home() {
   );
 
   const daysGoalHit = weeklyDays.filter(
-    (day) => day.ounces >= dailyGoalOz,
+    (day) => day.ounces >= settings.dailyGoalOz,
   ).length;
 
   useEffect(() => {
@@ -154,20 +195,30 @@ export default function Home() {
       setAccessToken(session.access_token);
 
       try {
-        const response = await authorizedFetch(
-          "/api/water-log?days=7",
-          session.access_token,
+        const [entriesResponse, settingsResponse] = await Promise.all([
+          authorizedFetch("/api/water-log?days=7", session.access_token),
+          authorizedFetch("/api/tracker-settings", session.access_token),
+        ]);
+
+        if (!entriesResponse.ok || !settingsResponse.ok) {
+          throw new Error("Unable to load tracker data.");
+        }
+
+        const entriesData = await entriesResponse.json();
+        const settingsData = await settingsResponse.json();
+
+        if (!isMounted) {
+          return;
+        }
+
+        const loadedSettings = normalizeSettings(settingsData.settings);
+
+        setEntries(
+          Array.isArray(entriesData.entries) ? entriesData.entries : [],
         );
 
-        if (!response.ok) {
-          throw new Error("Unable to load water entries.");
-        }
-
-        const data = await response.json();
-
-        if (isMounted) {
-          setEntries(Array.isArray(data.entries) ? data.entries : []);
-        }
+        setSettings(loadedSettings);
+        setDraftSettings(loadedSettings);
       } catch {
         if (isMounted) {
           setErrorMessage("Could not load your hydration data.");
@@ -191,7 +242,7 @@ export default function Home() {
       return;
     }
 
-    setIsSaving(true);
+    setIsSavingEntry(true);
     setErrorMessage("");
     setStatusMessage("");
 
@@ -205,7 +256,7 @@ export default function Home() {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            amountOz: bottleSizeOz,
+            amountOz: settings.bottleSizeOz,
             source: "manual",
             bottleName: "CEMC",
           }),
@@ -222,12 +273,14 @@ export default function Home() {
         setStatusMessage("Duplicate log ignored.");
       } else {
         setEntries((currentEntries) => [data.entry, ...currentEntries]);
-        setStatusMessage("Logged 25 oz manually.");
+        setStatusMessage(
+          `Logged ${settings.bottleSizeOz} oz manually.`,
+        );
       }
     } catch {
       setErrorMessage("Could not save this bottle. Please try again.");
     } finally {
-      setIsSaving(false);
+      setIsSavingEntry(false);
     }
   }
 
@@ -267,6 +320,63 @@ export default function Home() {
     }
   }
 
+  async function saveSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!accessToken) {
+      return;
+    }
+
+    setIsSavingSettings(true);
+    setErrorMessage("");
+    setStatusMessage("");
+
+    try {
+      const response = await authorizedFetch(
+        "/api/tracker-settings",
+        accessToken,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            dailyGoalOz: Number(draftSettings.dailyGoalOz),
+            bottleSizeOz: Number(draftSettings.bottleSizeOz),
+            wakeTime: draftSettings.wakeTime,
+            sleepTime: draftSettings.sleepTime,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Unable to save settings.");
+      }
+
+      const data = await response.json();
+      const updatedSettings = normalizeSettings(data.settings);
+
+      setSettings(updatedSettings);
+      setDraftSettings(updatedSettings);
+      setIsSettingsOpen(false);
+      setStatusMessage("Tracker settings saved.");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not save tracker settings.",
+      );
+    } finally {
+      setIsSavingSettings(false);
+    }
+  }
+
+  function cancelSettings() {
+    setDraftSettings(settings);
+    setIsSettingsOpen(false);
+  }
+
   async function signOut() {
     await browserSupabase.auth.signOut();
     window.location.replace("/login");
@@ -292,7 +402,7 @@ export default function Home() {
             </h1>
 
             <p className="mt-2 text-slate-600">
-              Tap your CEMC bottle tag after each 25 oz refill.
+              Tap your CEMC bottle tag after each refill.
             </p>
           </div>
 
@@ -324,7 +434,7 @@ export default function Home() {
               </p>
 
               <p className="text-lg font-bold text-sky-900">
-                {dailyGoalOz} oz
+                {settings.dailyGoalOz} oz
               </p>
             </div>
           </div>
@@ -374,7 +484,7 @@ export default function Home() {
             {weeklyDays.map((day) => {
               const heightPercent = Math.min(
                 Math.max(
-                  (day.ounces / dailyGoalOz) * 100,
+                  (day.ounces / settings.dailyGoalOz) * 100,
                   day.ounces > 0 ? 8 : 0,
                 ),
                 100,
@@ -409,8 +519,140 @@ export default function Home() {
 
           <p className="mt-5 text-sm text-slate-500">
             Each bar shows water logged for that Eastern Time calendar day. The
-            full height represents your {dailyGoalOz} oz goal.
+            full height represents your {settings.dailyGoalOz} oz goal.
           </p>
+        </section>
+
+        <section className="mt-6 rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-slate-500">
+                Tracker settings
+              </p>
+
+              <p className="mt-1 text-sm text-slate-700">
+                {settings.bottleSizeOz} oz bottle · Wake {settings.wakeTime} ·
+                Sleep {settings.sleepTime}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsSettingsOpen((isOpen) => !isOpen)}
+              className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
+            >
+              {isSettingsOpen ? "Close" : "Edit"}
+            </button>
+          </div>
+
+          {isSettingsOpen && (
+            <form className="mt-6 space-y-4" onSubmit={saveSettings}>
+              <div className="grid grid-cols-2 gap-4">
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">
+                    Daily goal (oz)
+                  </span>
+
+                  <input
+                    type="number"
+                    min="16"
+                    max="512"
+                    step="1"
+                    value={draftSettings.dailyGoalOz}
+                    onChange={(event) =>
+                      setDraftSettings((currentSettings) => ({
+                        ...currentSettings,
+                        dailyGoalOz: Number(event.target.value),
+                      }))
+                    }
+                    required
+                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">
+                    Bottle size (oz)
+                  </span>
+
+                  <input
+                    type="number"
+                    min="4"
+                    max="128"
+                    step="1"
+                    value={draftSettings.bottleSizeOz}
+                    onChange={(event) =>
+                      setDraftSettings((currentSettings) => ({
+                        ...currentSettings,
+                        bottleSizeOz: Number(event.target.value),
+                      }))
+                    }
+                    required
+                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">
+                    Wake time
+                  </span>
+
+                  <input
+                    type="time"
+                    value={draftSettings.wakeTime}
+                    onChange={(event) =>
+                      setDraftSettings((currentSettings) => ({
+                        ...currentSettings,
+                        wakeTime: event.target.value,
+                      }))
+                    }
+                    required
+                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">
+                    Sleep time
+                  </span>
+
+                  <input
+                    type="time"
+                    value={draftSettings.sleepTime}
+                    onChange={(event) =>
+                      setDraftSettings((currentSettings) => ({
+                        ...currentSettings,
+                        sleepTime: event.target.value,
+                      }))
+                    }
+                    required
+                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                  />
+                </label>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="submit"
+                  disabled={isSavingSettings}
+                  className="flex-1 rounded-xl bg-sky-600 px-4 py-3 font-bold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isSavingSettings ? "Saving..." : "Save settings"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={cancelSettings}
+                  disabled={isSavingSettings}
+                  className="rounded-xl bg-slate-100 px-4 py-3 font-bold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
         </section>
 
         <section className="mt-6 rounded-2xl bg-sky-600 p-5 text-white shadow-sm">
@@ -418,7 +660,9 @@ export default function Home() {
 
           <div className="mt-2 flex items-end justify-between gap-4">
             <div>
-              <p className="text-3xl font-bold">{bottleSizeOz} oz</p>
+              <p className="text-3xl font-bold">
+                {settings.bottleSizeOz} oz
+              </p>
 
               <p className="mt-1 text-sm text-sky-100">
                 Duplicate logging protection is active.
@@ -428,10 +672,10 @@ export default function Home() {
             <button
               type="button"
               onClick={logManualBottle}
-              disabled={isSaving || !accessToken}
+              disabled={isSavingEntry || !accessToken}
               className="rounded-xl bg-white px-4 py-3 text-sm font-bold text-sky-700 transition hover:bg-sky-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isSaving ? "Saving..." : "Log manually"}
+              {isSavingEntry ? "Saving..." : "Log manually"}
             </button>
           </div>
         </section>
