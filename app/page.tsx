@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import { browserSupabase } from "@/lib/supabase-browser";
 
 const defaultDailyGoalOz = 96;
@@ -414,6 +415,22 @@ export default function Home() {
             Sign out
           </button>
         </header>
+
+        <nav className="mb-6 flex rounded-2xl bg-white p-1 shadow-sm ring-1 ring-slate-200">
+          <Link
+            href="/"
+            className="flex-1 rounded-xl bg-sky-600 px-3 py-2 text-center text-sm font-semibold text-white"
+          >
+            Dashboard
+          </Link>
+
+          <Link
+            href="/profile"
+            className="flex-1 rounded-xl px-3 py-2 text-center text-sm font-semibold text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"
+          >
+            Profile
+          </Link>
+        </nav>
 
         <section className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
           <div className="flex items-start justify-between">
