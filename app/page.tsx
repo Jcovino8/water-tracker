@@ -1,11 +1,23 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-import Link from "next/link";
+import { FormEvent, useCallback, useEffect, useState } from "react";
+import { HydrationPaceCard } from "@/components/HydrationPaceCard";
+import TopNav from "@/components/top-nav";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { browserSupabase } from "@/lib/supabase-browser";
 
 const defaultDailyGoalOz = 96;
 const defaultBottleSizeOz = 25;
+const commonBottleSizes = [16.9, 20, 25];
 
 type WaterEntry = {
   id: string;
@@ -18,16 +30,28 @@ type WaterEntry = {
 type TrackerSettings = {
   dailyGoalOz: number;
   bottleSizeOz: number;
-  wakeTime: string;
-  sleepTime: string;
 };
 
 type TrackerSettingsApiResponse = {
   daily_goal_oz: number;
   bottle_size_oz: number;
-  wake_time: string;
-  sleep_time: string;
   updated_at: string;
+};
+
+type ProfileApiResponse = {
+  profile?: {
+    display_name?: string | null;
+    username?: string | null;
+  } | null;
+};
+
+type TrendDay = {
+  dateKey: string;
+  label: string;
+  fullLabel: string;
+  ounces: number;
+  isToday: boolean;
+  xLabel: string;
 };
 
 function formatTime(timestamp: string) {
@@ -49,7 +73,6 @@ function formatToday() {
 
 function getEasternDateKey(value: string | Date) {
   const date = typeof value === "string" ? new Date(value) : value;
-
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
@@ -64,15 +87,61 @@ function getEasternDateKey(value: string | Date) {
   return `${year}-${month}-${day}`;
 }
 
-function normalizeSettings(
-  settings: TrackerSettingsApiResponse,
-): TrackerSettings {
+function normalizeSettings(settings: TrackerSettingsApiResponse): TrackerSettings {
   return {
     dailyGoalOz: Number(settings.daily_goal_oz),
     bottleSizeOz: Number(settings.bottle_size_oz),
-    wakeTime: settings.wake_time.slice(0, 5),
-    sleepTime: settings.sleep_time.slice(0, 5),
   };
+}
+
+function greetingForCurrentTime() {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "numeric",
+      hourCycle: "h23",
+    }).format(new Date()),
+  );
+
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
+function calculateCurrentStreak(
+  days: TrendDay[],
+  dailyGoalOz: number,
+  todayKey: string,
+) {
+  let streak = 0;
+  const latestDay = days[days.length - 1];
+  const startIndex =
+    latestDay?.dateKey === todayKey && latestDay.ounces < dailyGoalOz
+      ? days.length - 2
+      : days.length - 1;
+
+  for (let index = startIndex; index >= 0; index -= 1) {
+    if (days[index].ounces < dailyGoalOz) break;
+    streak += 1;
+  }
+
+  return streak;
+}
+
+function formatOunces(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function buildChartTicks(maxValue: number) {
+  const roughStep = maxValue <= 160 ? 40 : maxValue <= 240 ? 50 : 100;
+  const top = Math.ceil(maxValue / roughStep) * roughStep;
+
+  const ticks: number[] = [];
+  for (let value = 0; value <= top; value += roughStep) {
+    ticks.push(value);
+  }
+
+  return { top, ticks };
 }
 
 async function authorizedFetch(
@@ -89,9 +158,60 @@ async function authorizedFetch(
   });
 }
 
+function TrendTooltip({
+  active,
+  payload,
+  dailyGoalOz,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: TrendDay }>;
+  dailyGoalOz: number;
+}) {
+  if (!active || !payload?.[0]) return null;
+
+  const day = payload[0].payload;
+  const metGoal = day.ounces >= dailyGoalOz;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-[#151a22] px-3 py-2.5 shadow-2xl">
+      <p className="text-xs font-medium text-slate-400">{day.fullLabel}</p>
+      <p className="mt-1 text-lg font-semibold text-white">{day.ounces} oz</p>
+      <p className={`mt-0.5 text-xs ${metGoal ? "text-emerald-300" : "text-slate-400"}`}>
+        {metGoal ? "Goal reached" : `${Math.max(Math.round(dailyGoalOz - day.ounces), 0)} oz below goal`}
+      </p>
+    </div>
+  );
+}
+
+function CustomDot(props: {
+  cx?: number;
+  cy?: number;
+  payload?: TrendDay;
+}) {
+  const { cx, cy, payload } = props;
+
+  if (typeof cx !== "number" || typeof cy !== "number") return null;
+
+  const isToday = payload?.isToday;
+
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      r={isToday ? 5 : 3}
+      fill={isToday ? "#ffffff" : "#0b0e13"}
+      stroke="#67e8f9"
+      strokeWidth={isToday ? 3 : 2}
+    />
+  );
+}
+
 export default function Home() {
   const [entries, setEntries] = useState<WaterEntry[]>([]);
   const [accessToken, setAccessToken] = useState("");
+  const [userId, setUserId] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState("");
+  const [manualAmountOz, setManualAmountOz] = useState(String(defaultBottleSizeOz));
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingEntry, setIsSavingEntry] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -103,30 +223,125 @@ export default function Home() {
   const [settings, setSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
-    wakeTime: "07:00",
-    sleepTime: "23:00",
   });
 
   const [draftSettings, setDraftSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
-    wakeTime: "07:00",
-    sleepTime: "23:00",
   });
 
-  const todayEastern = getEasternDateKey(new Date());
+  const loadDashboardData = useCallback(async (token: string) => {
+    const [entriesResponse, settingsResponse, profileResponse] = await Promise.all([
+      authorizedFetch("/api/water-log?days=7", token),
+      authorizedFetch("/api/tracker-settings", token),
+      authorizedFetch("/api/profile", token),
+    ]);
 
+    if (!entriesResponse.ok || !settingsResponse.ok) {
+      throw new Error("Unable to load tracker data.");
+    }
+
+    const entriesData = await entriesResponse.json();
+    const settingsData = await settingsResponse.json();
+    const loadedSettings = normalizeSettings(settingsData.settings);
+
+    setEntries(Array.isArray(entriesData.entries) ? entriesData.entries : []);
+    setSettings(loadedSettings);
+    setDraftSettings(loadedSettings);
+
+    if (profileResponse.ok) {
+      const profileData = (await profileResponse.json()) as ProfileApiResponse;
+      const profile = profileData.profile;
+      setDisplayName(profile?.display_name?.trim() || profile?.username?.trim() || "");
+    }
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    let loadingTimeout: number | undefined;
+
+    async function initializeDashboard() {
+      try {
+        const {
+          data: { session },
+          error: sessionError,
+        } = await browserSupabase.auth.getSession();
+
+        if (sessionError) throw sessionError;
+
+        if (!session) {
+          window.location.replace("/login");
+          return;
+        }
+
+        if (!isMounted) return;
+
+        setAccessToken(session.access_token);
+        setUserId(session.user.id);
+        await loadDashboardData(session.access_token);
+      } catch (error) {
+        console.error("Dashboard initialization failed:", error);
+        if (isMounted) {
+          setErrorMessage("Could not load your hydration data. Please refresh and try again.");
+        }
+      } finally {
+        if (isMounted) {
+          window.clearTimeout(loadingTimeout);
+          setIsLoading(false);
+        }
+      }
+    }
+
+    loadingTimeout = window.setTimeout(() => {
+      if (!isMounted) return;
+      setErrorMessage("The dashboard took too long to load. Please refresh and try again.");
+      setIsLoading(false);
+    }, 10000);
+
+    void initializeDashboard();
+
+    return () => {
+      isMounted = false;
+      if (loadingTimeout) window.clearTimeout(loadingTimeout);
+    };
+  }, [loadDashboardData]);
+
+  useEffect(() => {
+    if (!userId || !accessToken) return;
+
+    const channel = browserSupabase
+      .channel(`water-entries:${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "water_entries",
+          filter: `user_id=eq.${userId}`,
+        },
+        () => {
+          void loadDashboardData(accessToken);
+        },
+      )
+      .subscribe((status) => {
+        console.log("Water-entries Realtime status:", status);
+      });
+
+    return () => {
+      void browserSupabase.removeChannel(channel);
+    };
+  }, [accessToken, loadDashboardData, userId]);
+
+  const todayEastern = getEasternDateKey(new Date());
   const todayEntries = entries.filter(
     (entry) => getEasternDateKey(entry.created_at) === todayEastern,
   );
-
   const currentOz = todayEntries.reduce(
     (total, entry) => total + Number(entry.amount_oz),
     0,
   );
-
-  const remainingOz = Math.max(settings.dailyGoalOz - currentOz, 0);
-
+  const remainingOz = Math.max(Math.round(settings.dailyGoalOz - currentOz), 0);
+  const overGoalOz = Math.max(Math.round(currentOz - settings.dailyGoalOz), 0);
   const progressPercent = Math.min(
     Math.round((currentOz / settings.dailyGoalOz) * 100),
     100,
@@ -135,111 +350,81 @@ export default function Home() {
   const ouncesByEasternDate = entries.reduce<Record<string, number>>(
     (totals, entry) => {
       const entryDateKey = getEasternDateKey(entry.created_at);
-
-      totals[entryDateKey] =
-        (totals[entryDateKey] ?? 0) + Number(entry.amount_oz);
-
+      totals[entryDateKey] = (totals[entryDateKey] ?? 0) + Number(entry.amount_oz);
       return totals;
     },
     {},
   );
 
-  const weekStart = new Date(`${todayEastern}T12:00:00.000Z`);
-  weekStart.setUTCDate(weekStart.getUTCDate() - 6);
+  const todayDate = new Date();
 
-  const weeklyDays = Array.from({ length: 7 }, (_, dayIndex) => {
-    const day = new Date(weekStart);
-    day.setUTCDate(weekStart.getUTCDate() + dayIndex);
+  const weeklyDays: TrendDay[] = Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(todayDate);
+    day.setDate(todayDate.getDate() - (6 - index));
 
-    const dateKey = day.toISOString().slice(0, 10);
-
-    const label = new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/New_York",
-      weekday: "narrow",
-    }).format(day);
+    const dateKey = getEasternDateKey(day);
 
     return {
-      dayIndex,
       dateKey,
-      label,
+      label: new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        weekday: "narrow",
+      }).format(day),
+      fullLabel: new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      }).format(day),
       ounces: ouncesByEasternDate[dateKey] ?? 0,
       isToday: dateKey === todayEastern,
+      xLabel: `${dateKey}-${new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York",
+        weekday: "narrow",
+      }).format(day)}`,
     };
   });
 
-  const weeklyTotalOz = weeklyDays.reduce(
-    (total, day) => total + day.ounces,
-    0,
+  const weeklyTotalOz = weeklyDays.reduce((total, day) => total + day.ounces, 0);
+  const weeklyAverageOz = Math.round(weeklyTotalOz / weeklyDays.length);
+  const daysGoalHit = weeklyDays.filter((day) => day.ounces >= settings.dailyGoalOz).length;
+  const bestDay = weeklyDays.reduce((best, day) => (day.ounces > best.ounces ? day : best), weeklyDays[0]);
+  const currentStreak = calculateCurrentStreak(weeklyDays, settings.dailyGoalOz, todayEastern);
+  const chartMaximum = Math.max(
+    settings.dailyGoalOz,
+    ...weeklyDays.map((day) => day.ounces),
+  );
+  const { top: chartTop, ticks: chartTicks } = buildChartTicks(
+    Math.ceil(chartMaximum * 1.15),
   );
 
-  const daysGoalHit = weeklyDays.filter(
-    (day) => day.ounces >= settings.dailyGoalOz,
-  ).length;
+  const greeting = displayName
+    ? `${greetingForCurrentTime()}, ${displayName}`
+    : greetingForCurrentTime();
 
-  useEffect(() => {
-    let isMounted = true;
+  const progressCopy =
+    currentOz >= settings.dailyGoalOz
+      ? `Daily target complete — ${currentOz} oz logged.`
+      : remainingOz <= settings.bottleSizeOz
+        ? "One more bottle gets you to your target."
+        : `${remainingOz} oz to go for today.`;
 
-    async function loadDashboard() {
-      const {
-        data: { session },
-      } = await browserSupabase.auth.getSession();
+  const insightCopy =
+    daysGoalHit === 7
+      ? "Perfect week so far. You have reached your target every day."
+      : weeklyAverageOz >= settings.dailyGoalOz
+        ? `You are averaging ${weeklyAverageOz} oz per day — ${weeklyAverageOz - settings.dailyGoalOz} oz above target.`
+        : `Your 7-day average is ${weeklyAverageOz} oz — ${settings.dailyGoalOz - weeklyAverageOz} oz below target.`;
 
-      if (!session) {
-        window.location.replace("/login");
-        return;
-      }
-
-      if (!isMounted) {
-        return;
-      }
-
-      setAccessToken(session.access_token);
-
-      try {
-        const [entriesResponse, settingsResponse] = await Promise.all([
-          authorizedFetch("/api/water-log?days=7", session.access_token),
-          authorizedFetch("/api/tracker-settings", session.access_token),
-        ]);
-
-        if (!entriesResponse.ok || !settingsResponse.ok) {
-          throw new Error("Unable to load tracker data.");
-        }
-
-        const entriesData = await entriesResponse.json();
-        const settingsData = await settingsResponse.json();
-
-        if (!isMounted) {
-          return;
-        }
-
-        const loadedSettings = normalizeSettings(settingsData.settings);
-
-        setEntries(
-          Array.isArray(entriesData.entries) ? entriesData.entries : [],
-        );
-
-        setSettings(loadedSettings);
-        setDraftSettings(loadedSettings);
-      } catch {
-        if (isMounted) {
-          setErrorMessage("Could not load your hydration data.");
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadDashboard();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const manualAmount = Number(manualAmountOz);
+  const canLogManualAmount = Number.isFinite(manualAmount) && manualAmount > 0 && manualAmount <= 512;
+  const quickLogSizes = Array.from(
+    new Set([...commonBottleSizes, settings.bottleSizeOz]),
+  ).sort((a, b) => a - b);
 
   async function logManualBottle() {
-    if (!accessToken) {
+    if (!accessToken || !canLogManualAmount) {
+      setErrorMessage("Enter an amount between 0.1 and 512 oz.");
       return;
     }
 
@@ -248,49 +433,35 @@ export default function Home() {
     setStatusMessage("");
 
     try {
-      const response = await authorizedFetch(
-        "/api/water-log",
-        accessToken,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            amountOz: settings.bottleSizeOz,
-            source: "manual",
-            bottleName: "CEMC",
-          }),
-        },
-      );
+      const response = await authorizedFetch("/api/water-log", accessToken, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountOz: manualAmount,
+          source: "manual",
+          bottleName: "Manual entry",
+        }),
+      });
 
-      if (!response.ok) {
-        throw new Error("Unable to save water entry.");
-      }
+      if (!response.ok) throw new Error("Unable to save water entry.");
 
       const data = await response.json();
-
       if (data.duplicate) {
         setStatusMessage("Duplicate log ignored.");
       } else {
         setEntries((currentEntries) => [data.entry, ...currentEntries]);
-        setStatusMessage(
-          `Logged ${settings.bottleSizeOz} oz manually.`,
-        );
+        setStatusMessage(`Logged ${formatOunces(manualAmount)} oz manually.`);
+        await loadDashboardData(accessToken);
       }
     } catch {
-      setErrorMessage("Could not save this bottle. Please try again.");
+      setErrorMessage("Could not save this entry. Please try again.");
     } finally {
       setIsSavingEntry(false);
     }
   }
 
-  async function undoLastEntry() {
-    const mostRecentEntry = todayEntries[0];
-
-    if (!mostRecentEntry || !accessToken) {
-      return;
-    }
+  async function deleteEntry(entryId: string) {
+    if (!accessToken) return;
 
     setIsDeleting(true);
     setErrorMessage("");
@@ -298,24 +469,26 @@ export default function Home() {
 
     try {
       const response = await authorizedFetch(
-        `/api/water-log?id=${mostRecentEntry.id}`,
+        `/api/water-log?id=${entryId}`,
         accessToken,
-        {
-          method: "DELETE",
-        },
+        { method: "DELETE" },
       );
 
+      const data = await response.json();
+
       if (!response.ok) {
-        throw new Error("Unable to delete water entry.");
+        throw new Error(data.error || "Unable to delete water entry.");
       }
 
       setEntries((currentEntries) =>
-        currentEntries.filter((entry) => entry.id !== mostRecentEntry.id),
+        currentEntries.filter((entry) => entry.id !== entryId),
       );
-
-      setStatusMessage("Most recent entry removed.");
-    } catch {
-      setErrorMessage("Could not undo this entry. Please try again.");
+      setStatusMessage("Entry removed.");
+      await loadDashboardData(accessToken);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not delete this entry.",
+      );
     } finally {
       setIsDeleting(false);
     }
@@ -323,10 +496,7 @@ export default function Home() {
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    if (!accessToken) {
-      return;
-    }
+    if (!accessToken) return;
 
     setIsSavingSettings(true);
     setErrorMessage("");
@@ -338,14 +508,10 @@ export default function Home() {
         accessToken,
         {
           method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             dailyGoalOz: Number(draftSettings.dailyGoalOz),
             bottleSizeOz: Number(draftSettings.bottleSizeOz),
-            wakeTime: draftSettings.wakeTime,
-            sleepTime: draftSettings.sleepTime,
           }),
         },
       );
@@ -357,16 +523,14 @@ export default function Home() {
 
       const data = await response.json();
       const updatedSettings = normalizeSettings(data.settings);
-
       setSettings(updatedSettings);
       setDraftSettings(updatedSettings);
+      setManualAmountOz(String(updatedSettings.bottleSizeOz));
       setIsSettingsOpen(false);
       setStatusMessage("Tracker settings saved.");
     } catch (error) {
       setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : "Could not save tracker settings.",
+        error instanceof Error ? error.message : "Could not save tracker settings.",
       );
     } finally {
       setIsSavingSettings(false);
@@ -385,191 +549,271 @@ export default function Home() {
 
   if (isLoading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-5 text-slate-600">
+      <main className="flex min-h-screen items-center justify-center bg-[#0b0e13] px-5 text-slate-400">
         Checking secure session…
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 px-5 py-10 text-slate-900">
-      <div className="mx-auto max-w-md">
+    <main className="min-h-screen bg-[#0b0e13] px-4 py-6 text-slate-100 sm:px-6 sm:py-10">
+      <div className="mx-auto max-w-5xl">
         <header className="mb-8 flex items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-medium text-sky-600">Water Tracker</p>
-
-            <h1 className="mt-1 text-3xl font-bold tracking-tight">
-              {formatToday()}
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-cyan-400 shadow-[0_0_14px_rgba(34,211,238,0.9)]" />
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">
+                Hydration performance
+              </p>
+            </div>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+              {greeting}
             </h1>
-
-            <p className="mt-2 text-slate-600">
-              Tap your CEMC bottle tag after each refill.
-            </p>
+            <p className="mt-2 text-sm text-slate-400">{formatToday()}</p>
           </div>
 
           <button
             type="button"
             onClick={signOut}
-            className="text-sm font-semibold text-slate-500 underline underline-offset-4 hover:text-slate-900"
+            className="rounded-lg border border-white/10 px-3 py-2 text-sm font-medium text-slate-400 transition hover:border-white/20 hover:text-white"
           >
             Sign out
           </button>
         </header>
 
-        <nav className="mb-6 flex rounded-2xl bg-white p-1 shadow-sm ring-1 ring-slate-200">
-          <Link
-            href="/"
-            className="flex-1 rounded-xl bg-sky-600 px-3 py-2 text-center text-sm font-semibold text-white"
-          >
-            Dashboard
-          </Link>
+        <TopNav />
 
-          <Link
-            href="/profile"
-            className="flex-1 rounded-xl px-3 py-2 text-center text-sm font-semibold text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"
-          >
-            Profile
-          </Link>
-        </nav>
-
-        <section className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-          <div className="flex items-start justify-between">
+        <section className="overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-[#161c26] via-[#111720] to-[#0d1219] shadow-2xl shadow-black/25">
+          <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[1.35fr_0.65fr] lg:items-end">
             <div>
-              <p className="text-sm font-medium text-slate-500">
-                Today&apos;s intake
-              </p>
+              <p className="text-sm font-medium text-slate-400">Today&apos;s hydration</p>
+              <div className="mt-3 flex items-end gap-3">
+                <p className="text-6xl font-semibold tracking-[-0.06em] text-white sm:text-7xl">
+                  {currentOz}
+                </p>
+                <p className="mb-2 text-xl font-medium text-slate-500">oz</p>
+              </div>
+              <p className="mt-4 text-sm text-slate-300">{progressCopy}</p>
 
-              <p className="mt-2 text-5xl font-bold tracking-tight">
-                {currentOz}
-                <span className="ml-1 text-2xl text-slate-400">oz</span>
-              </p>
+              <div className="mt-7">
+                <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-teal-300 transition-all duration-500"
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+                <div className="mt-3 flex justify-between text-xs font-medium text-slate-500">
+                  <span>{progressPercent}% of target</span>
+                  <span>{settings.dailyGoalOz} oz goal</span>
+                </div>
+              </div>
             </div>
 
-            <div className="rounded-2xl bg-sky-100 px-3 py-2 text-right">
-              <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
-                Goal
+            <div className="rounded-xl border border-cyan-300/15 bg-cyan-300/[0.06] p-5 lg:mb-1">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-200/80">
+                Today&apos;s total
               </p>
-
-              <p className="text-lg font-bold text-sky-900">
-                {settings.dailyGoalOz} oz
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-7">
-            <div className="h-4 overflow-hidden rounded-full bg-slate-100">
-              <div
-                className="h-full rounded-full bg-sky-500 transition-all duration-300"
-                style={{ width: `${progressPercent}%` }}
-              />
-            </div>
-
-            <div className="mt-3 flex justify-between text-sm">
-              <span className="font-medium text-sky-700">
-                {progressPercent}% complete
-              </span>
-
-              <span className="text-slate-500">
-                {remainingOz} oz remaining
-              </span>
+              {currentOz >= settings.dailyGoalOz ? (
+                <>
+                  <p className="mt-3 text-3xl font-semibold text-emerald-300">Goal complete</p>
+                  <p className="mt-1 text-sm text-slate-400">
+                    {overGoalOz > 0
+                      ? `${overGoalOz} oz above your daily target.`
+                      : "You reached your daily target exactly."}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="mt-3 text-3xl font-semibold text-white">{remainingOz} oz</p>
+                  <p className="mt-1 text-sm text-slate-400">remaining to hit your goal</p>
+                </>
+              )}
             </div>
           </div>
         </section>
 
-        <section className="mt-6 rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-          <div className="flex items-start justify-between gap-4">
+        <div className="mt-5">
+          <HydrationPaceCard
+            dailyGoalOz={settings.dailyGoalOz}
+            bottleSizeOz={settings.bottleSizeOz}
+            currentOz={currentOz}
+          />
+        </div>
+
+        <section className="mt-5 rounded-2xl border border-cyan-300/15 bg-[#111720] p-5 sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <p className="text-sm font-medium text-slate-500">
-                Last 7 days
-              </p>
-
-              <p className="mt-1 text-2xl font-bold tracking-tight">
-                {weeklyTotalOz} oz
-              </p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">Manual log</p>
+              <h2 className="mt-2 text-xl font-semibold text-white">Add hydration</h2>
+              <p className="mt-1 text-sm text-slate-400">Log any amount when you finish a bottle, cup, or refill.</p>
             </div>
-
-            <div className="text-right">
-              <p className="text-sm font-semibold text-sky-700">
-                {daysGoalHit}/7
-              </p>
-
-              <p className="mt-1 text-xs text-slate-500">goals reached</p>
-            </div>
+            <p className="rounded-md border border-white/10 px-3 py-2 text-xs text-slate-400">
+              Your bottle: {settings.bottleSizeOz} oz
+            </p>
           </div>
 
-          <div className="mt-6 grid h-32 grid-cols-7 items-end gap-2">
-            {weeklyDays.map((day) => {
-              const heightPercent = Math.min(
-                Math.max(
-                  (day.ounces / settings.dailyGoalOz) * 100,
-                  day.ounces > 0 ? 8 : 0,
-                ),
-                100,
-              );
-
+          <div className="mt-5 flex flex-wrap gap-2">
+            {quickLogSizes.map((size) => {
+              const isSelected = Number(manualAmountOz) === size;
               return (
-                <div
-                  key={day.dateKey}
-                  className="flex h-full flex-col items-center justify-end gap-2"
+                <button
+                  key={size}
+                  type="button"
+                  onClick={() => setManualAmountOz(String(size))}
+                  className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                    isSelected
+                      ? "border-cyan-300 bg-cyan-300 text-[#071015]"
+                      : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/20 hover:text-white"
+                  }`}
                 >
-                  <div className="flex h-full w-full items-end rounded-lg bg-slate-100">
-                    <div
-                      className={`w-full rounded-lg transition-all duration-300 ${
-                        day.isToday ? "bg-sky-600" : "bg-sky-300"
-                      }`}
-                      style={{ height: `${heightPercent}%` }}
-                      title={`${day.ounces} oz`}
-                    />
-                  </div>
-
-                  <span
-                    className={`text-xs font-semibold ${
-                      day.isToday ? "text-sky-700" : "text-slate-500"
-                    }`}
-                  >
-                    {day.label}
-                  </span>
-                </div>
+                  {formatOunces(size)} oz
+                  {size === settings.bottleSizeOz ? " · My bottle" : ""}
+                </button>
               );
             })}
           </div>
 
-          <p className="mt-5 text-sm text-slate-500">
-            Each bar shows water logged for that Eastern Time calendar day. The
-            full height represents your {settings.dailyGoalOz} oz goal.
-          </p>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+            <label className="relative flex-1">
+              <span className="sr-only">Custom ounces</span>
+              <input
+                type="number"
+                min="0.1"
+                max="512"
+                step="0.1"
+                value={manualAmountOz}
+                onChange={(event) => setManualAmountOz(event.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-[#0b0e13] px-4 py-3 pr-12 text-lg font-semibold text-white outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
+                aria-label="Custom ounces"
+              />
+              <span className="pointer-events-none absolute right-4 top-3.5 text-sm font-medium text-slate-500">oz</span>
+            </label>
+            <button
+              type="button"
+              onClick={logManualBottle}
+              disabled={isSavingEntry || !accessToken || !canLogManualAmount}
+              className="rounded-lg bg-cyan-300 px-6 py-3 text-sm font-bold text-[#071015] transition hover:bg-cyan-200 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSavingEntry ? "Logging…" : `Log ${canLogManualAmount ? formatOunces(manualAmount) : ""} oz`}
+            </button>
+          </div>
         </section>
 
-        <section className="mt-6 rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">7-day average</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{weeklyAverageOz}<span className="ml-1 text-sm text-slate-500">oz</span></p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Goal days</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{daysGoalHit}<span className="text-sm text-slate-500">/7</span></p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Goal streak</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{currentStreak}<span className="ml-1 text-sm text-slate-500">days</span></p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Best day</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{bestDay.ounces}<span className="ml-1 text-sm text-slate-500">oz</span></p>
+          </div>
+        </section>
+
+        <section className="mt-5 rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">Trend view</p>
+              <h2 className="mt-2 text-xl font-semibold text-white">Weekly hydration</h2>
+              <p className="mt-1 text-sm text-slate-400">Daily intake against your {settings.dailyGoalOz} oz target.</p>
+            </div>
+            <div className="rounded-md border border-white/10 px-3 py-2 text-right">
+              <p className="text-xs text-slate-500">Weekly total</p>
+              <p className="text-sm font-semibold text-white">{weeklyTotalOz} oz</p>
+            </div>
+          </div>
+
+          <div className="mt-6 h-64 sm:h-72">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={weeklyDays} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="hydrationArea" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.38} />
+                    <stop offset="100%" stopColor="#22d3ee" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid vertical={false} stroke="#ffffff" strokeOpacity={0.07} />
+                <XAxis
+                  dataKey="dateKey"
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fill: "#7f8aa0", fontSize: 12 }}
+                  dy={10}
+                  tickFormatter={(value) =>
+                    new Intl.DateTimeFormat("en-US", {
+                      timeZone: "America/New_York",
+                      weekday: "narrow",
+                    }).format(new Date(`${value}T12:00:00`))
+                  }
+                />
+                <YAxis
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fill: "#7f8aa0", fontSize: 11 }}
+                  domain={[0, chartTop]}
+                  ticks={chartTicks}
+                  allowDecimals={false}
+                />
+                <Tooltip
+                  cursor={{ stroke: "#67e8f9", strokeWidth: 1, strokeOpacity: 0.45 }}
+                  content={<TrendTooltip dailyGoalOz={settings.dailyGoalOz} />}
+                />
+                <ReferenceLine
+                  y={settings.dailyGoalOz}
+                  stroke="#fbbf24"
+                  strokeDasharray="5 5"
+                  strokeOpacity={0.85}
+                  label={{ value: "Goal", fill: "#fcd34d", fontSize: 11, position: "insideTopRight" }}
+                />
+                <Area
+                  type="linear"
+                  dataKey="ounces"
+                  stroke="#22d3ee"
+                  strokeWidth={3}
+                  fill="url(#hydrationArea)"
+                  activeDot={{ r: 5, fill: "#ffffff", stroke: "#22d3ee", strokeWidth: 3 }}
+                  dot={<CustomDot />}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+
+        <section className="mt-5 rounded-xl border border-amber-300/15 bg-amber-300/[0.05] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-200/80">Hydration insight</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">{insightCopy}</p>
+        </section>
+
+        <section className="mt-5 rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-sm font-medium text-slate-500">
-                Tracker settings
-              </p>
-
-              <p className="mt-1 text-sm text-slate-700">
-                {settings.bottleSizeOz} oz bottle · Wake {settings.wakeTime} ·
-                Sleep {settings.sleepTime}
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Tracker settings</p>
+              <p className="mt-2 text-sm text-slate-300">
+                {settings.bottleSizeOz} oz bottle · {settings.dailyGoalOz} oz daily goal
               </p>
             </div>
-
             <button
               type="button"
               onClick={() => setIsSettingsOpen((isOpen) => !isOpen)}
-              className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
+              className="rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white"
             >
               {isSettingsOpen ? "Close" : "Edit"}
             </button>
           </div>
 
           {isSettingsOpen && (
-            <form className="mt-6 space-y-4" onSubmit={saveSettings}>
+            <form className="mt-6 space-y-4 border-t border-white/10 pt-5" onSubmit={saveSettings}>
               <div className="grid grid-cols-2 gap-4">
                 <label className="block">
-                  <span className="text-sm font-semibold text-slate-700">
-                    Daily goal (oz)
-                  </span>
-
+                  <span className="text-sm font-medium text-slate-300">Daily goal (oz)</span>
                   <input
                     type="number"
                     min="16"
@@ -583,15 +827,11 @@ export default function Home() {
                       }))
                     }
                     required
-                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                    className="mt-2 w-full rounded-lg border border-white/10 bg-[#0b0e13] px-3 py-2.5 text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
                   />
                 </label>
-
                 <label className="block">
-                  <span className="text-sm font-semibold text-slate-700">
-                    Bottle size (oz)
-                  </span>
-
+                  <span className="text-sm font-medium text-slate-300">Bottle size (oz)</span>
                   <input
                     type="number"
                     min="4"
@@ -605,47 +845,7 @@ export default function Home() {
                       }))
                     }
                     required
-                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
-                  />
-                </label>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <label className="block">
-                  <span className="text-sm font-semibold text-slate-700">
-                    Wake time
-                  </span>
-
-                  <input
-                    type="time"
-                    value={draftSettings.wakeTime}
-                    onChange={(event) =>
-                      setDraftSettings((currentSettings) => ({
-                        ...currentSettings,
-                        wakeTime: event.target.value,
-                      }))
-                    }
-                    required
-                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
-                  />
-                </label>
-
-                <label className="block">
-                  <span className="text-sm font-semibold text-slate-700">
-                    Sleep time
-                  </span>
-
-                  <input
-                    type="time"
-                    value={draftSettings.sleepTime}
-                    onChange={(event) =>
-                      setDraftSettings((currentSettings) => ({
-                        ...currentSettings,
-                        sleepTime: event.target.value,
-                      }))
-                    }
-                    required
-                    className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                    className="mt-2 w-full rounded-lg border border-white/10 bg-[#0b0e13] px-3 py-2.5 text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
                   />
                 </label>
               </div>
@@ -654,16 +854,15 @@ export default function Home() {
                 <button
                   type="submit"
                   disabled={isSavingSettings}
-                  className="flex-1 rounded-xl bg-sky-600 px-4 py-3 font-bold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="flex-1 rounded-lg bg-cyan-300 px-4 py-3 text-sm font-bold text-[#071015] transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isSavingSettings ? "Saving..." : "Save settings"}
+                  {isSavingSettings ? "Saving…" : "Save settings"}
                 </button>
-
                 <button
                   type="button"
                   onClick={cancelSettings}
                   disabled={isSavingSettings}
-                  className="rounded-xl bg-slate-100 px-4 py-3 font-bold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-lg border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Cancel
                 </button>
@@ -672,55 +871,30 @@ export default function Home() {
           )}
         </section>
 
-        <section className="mt-6 rounded-2xl bg-sky-600 p-5 text-white shadow-sm">
-          <p className="text-sm font-medium text-sky-100">CEMC NFC bottle</p>
-
-          <div className="mt-2 flex items-end justify-between gap-4">
-            <div>
-              <p className="text-3xl font-bold">
-                {settings.bottleSizeOz} oz
-              </p>
-
-              <p className="mt-1 text-sm text-sky-100">
-                Duplicate logging protection is active.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={logManualBottle}
-              disabled={isSavingEntry || !accessToken}
-              className="rounded-xl bg-white px-4 py-3 text-sm font-bold text-sky-700 transition hover:bg-sky-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isSavingEntry ? "Saving..." : "Log manually"}
-            </button>
-          </div>
-        </section>
-
         {statusMessage && (
-          <p className="mt-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200">
+          <p className="mt-5 rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-4 py-3 text-sm font-medium text-emerald-200">
             {statusMessage}
           </p>
         )}
 
         {errorMessage && (
-          <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700 ring-1 ring-red-200">
+          <p className="mt-5 rounded-lg border border-red-300/20 bg-red-300/10 px-4 py-3 text-sm font-medium text-red-200">
             {errorMessage}
           </p>
         )}
 
-        <section className="mt-8">
+        <section className="mt-8 pb-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-bold">Today&apos;s activity</h2>
-
-            <span className="text-sm text-slate-500">
-              {todayEntries.length} entries
-            </span>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Recent activity</p>
+              <h2 className="mt-1 text-xl font-semibold text-white">Today&apos;s log</h2>
+            </div>
+            <span className="text-sm text-slate-500">{todayEntries.length} entries</span>
           </div>
 
-          <div className="mt-3 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+          <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-[#111720]">
             {todayEntries.length === 0 && (
-              <p className="px-5 py-8 text-center text-sm text-slate-500">
+              <p className="px-5 py-10 text-center text-sm text-slate-500">
                 No water logged yet. Finish your first bottle and tap the tag.
               </p>
             )}
@@ -728,33 +902,40 @@ export default function Home() {
             {todayEntries.map((entry) => (
               <div
                 key={entry.id}
-                className="flex items-center justify-between border-b border-slate-100 px-5 py-4 last:border-b-0"
+                className="flex items-center justify-between gap-4 border-b border-white/10 px-5 py-4 last:border-b-0"
               >
-                <div>
-                  <p className="font-semibold">{entry.amount_oz} oz logged</p>
-
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-white">
+                    {formatOunces(Number(entry.amount_oz))} oz
+                  </p>
                   <p className="mt-1 text-sm text-slate-500">
                     {formatTime(entry.created_at)}
                   </p>
                 </div>
 
-                <span className="rounded-full bg-sky-100 px-3 py-1 text-sm font-semibold text-sky-700">
-                  {entry.source.toUpperCase()}
-                </span>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                      entry.source === "nfc"
+                        ? "bg-cyan-300/10 text-cyan-200"
+                        : "bg-white/10 text-slate-300"
+                    }`}
+                  >
+                    {entry.source.toUpperCase()}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => deleteEntry(entry.id)}
+                    disabled={isDeleting || !accessToken}
+                    className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-1.5 text-xs font-semibold text-red-200 transition hover:border-red-400/40 hover:bg-red-400/15 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             ))}
           </div>
-
-          <button
-            type="button"
-            onClick={undoLastEntry}
-            disabled={
-              todayEntries.length === 0 || isDeleting || !accessToken
-            }
-            className="mt-4 text-sm font-semibold text-slate-500 underline underline-offset-4 transition hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {isDeleting ? "Undoing..." : "Undo most recent entry"}
-          </button>
         </section>
       </div>
     </main>

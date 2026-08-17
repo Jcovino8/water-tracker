@@ -1,13 +1,9 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
-const ownerEmail = process.env.WATER_TRACKER_OWNER_EMAIL?.trim().toLowerCase();
-
 type TrackerSettingsRequest = {
   dailyGoalOz?: unknown;
   bottleSizeOz?: unknown;
-  wakeTime?: unknown;
-  sleepTime?: unknown;
 };
 
 function unauthorizedResponse() {
@@ -17,11 +13,11 @@ function unauthorizedResponse() {
   );
 }
 
-async function isOwner(request: Request) {
+async function getAuthenticatedUser(request: Request) {
   const authorizationHeader = request.headers.get("authorization");
 
-  if (!authorizationHeader?.startsWith("Bearer ") || !ownerEmail) {
-    return false;
+  if (!authorizationHeader?.startsWith("Bearer ")) {
+    return null;
   }
 
   const accessToken = authorizationHeader.slice("Bearer ".length);
@@ -31,32 +27,25 @@ async function isOwner(request: Request) {
     error,
   } = await supabase.auth.getUser(accessToken);
 
-  if (error || !user?.email) {
-    return false;
+  if (error || !user) {
+    return null;
   }
 
-  return user.email.toLowerCase() === ownerEmail;
-}
-
-function isValidTime(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)
-  );
+  return user;
 }
 
 export async function GET(request: Request) {
-  if (!(await isOwner(request))) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
     return unauthorizedResponse();
   }
 
   const { data, error } = await supabase
     .from("tracker_settings")
-    .select(
-      "daily_goal_oz, bottle_size_oz, wake_time, sleep_time, updated_at",
-    )
-    .eq("id", 1)
-    .single();
+    .select("daily_goal_oz, bottle_size_oz, updated_at")
+    .eq("id", user.id)
+    .maybeSingle();
 
   if (error) {
     console.error("Failed to fetch tracker settings:", error);
@@ -67,11 +56,36 @@ export async function GET(request: Request) {
     );
   }
 
+  if (!data) {
+    const { data: insertedSettings, error: insertError } = await supabase
+      .from("tracker_settings")
+      .insert({
+        id: user.id,
+        daily_goal_oz: 128,
+        bottle_size_oz: 25,
+      })
+      .select("daily_goal_oz, bottle_size_oz, updated_at")
+      .single();
+
+    if (insertError) {
+      console.error("Failed to create tracker settings:", insertError);
+
+      return NextResponse.json(
+        { error: "Unable to create tracker settings." },
+        { status: 500 },
+      );
+    }
+
+    return NextResponse.json({ settings: insertedSettings });
+  }
+
   return NextResponse.json({ settings: data });
 }
 
 export async function PATCH(request: Request) {
-  if (!(await isOwner(request))) {
+  const user = await getAuthenticatedUser(request);
+
+  if (!user) {
     return unauthorizedResponse();
   }
 
@@ -111,26 +125,15 @@ export async function PATCH(request: Request) {
     );
   }
 
-  if (!isValidTime(body.wakeTime) || !isValidTime(body.sleepTime)) {
-    return NextResponse.json(
-      { error: "wakeTime and sleepTime must use 24-hour HH:MM format." },
-      { status: 400 },
-    );
-  }
-
   const { data, error } = await supabase
     .from("tracker_settings")
-    .update({
+    .upsert({
+      id: user.id,
       daily_goal_oz: dailyGoalOz,
       bottle_size_oz: bottleSizeOz,
-      wake_time: body.wakeTime,
-      sleep_time: body.sleepTime,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", 1)
-    .select(
-      "daily_goal_oz, bottle_size_oz, wake_time, sleep_time, updated_at",
-    )
+    .select("daily_goal_oz, bottle_size_oz, updated_at")
     .single();
 
   if (error) {

@@ -112,20 +112,34 @@ function unauthorizedResponse() {
   );
 }
 
-function getEasternDateKey(timestamp: string) {
-  const dateFormatter = new Intl.DateTimeFormat("en-US", {
+function getEasternDateKey(value: string | Date) {
+  const date = typeof value === "string" ? new Date(value) : value;
+
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  });
+  }).formatToParts(date);
 
-  const parts = dateFormatter.formatToParts(new Date(timestamp));
   const year = parts.find((part) => part.type === "year")?.value;
   const month = parts.find((part) => part.type === "month")?.value;
   const day = parts.find((part) => part.type === "day")?.value;
 
   return `${year}-${month}-${day}`;
+}
+
+function getEasternDateKeys(days: number) {
+  const keys: string[] = [];
+  const now = new Date();
+
+  for (let offset = 0; offset < days; offset += 1) {
+    const day = new Date(now);
+    day.setDate(now.getDate() - offset);
+    keys.push(getEasternDateKey(day));
+  }
+
+  return new Set(keys);
 }
 
 export async function GET(request: Request) {
@@ -146,16 +160,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const todayEastern = getEasternDateKey(new Date().toISOString());
-
-  const easternDates = new Set<string>();
-  const cursor = new Date(`${todayEastern}T12:00:00.000Z`);
-
-  for (let offset = 0; offset < days; offset += 1) {
-    const dateKey = cursor.toISOString().slice(0, 10);
-    easternDates.add(dateKey);
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
-  }
+  const easternDateKeys = getEasternDateKeys(days);
 
   const { data, error } = await supabase
     .from("water_entries")
@@ -173,7 +178,7 @@ export async function GET(request: Request) {
   }
 
   const entries = data.filter((entry) =>
-    easternDates.has(getEasternDateKey(entry.created_at)),
+    easternDateKeys.has(getEasternDateKey(entry.created_at)),
   );
 
   return NextResponse.json({
@@ -310,8 +315,7 @@ export async function DELETE(request: Request) {
     .delete()
     .eq("id", entryId)
     .eq("user_id", ownerUser.id)
-    .select("id")
-    .single();
+    .select("id");
 
   if (error) {
     console.error("Failed to delete water entry:", error);
@@ -322,5 +326,12 @@ export async function DELETE(request: Request) {
     );
   }
 
-  return NextResponse.json({ deletedEntryId: data.id });
+  if (!data || data.length === 0) {
+    return NextResponse.json(
+      { error: "Entry not found." },
+      { status: 404 },
+    );
+  }
+
+  return NextResponse.json({ deletedEntryId: data[0].id });
 }
