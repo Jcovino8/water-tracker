@@ -1,50 +1,39 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import TopNav from "@/components/top-nav";
 import { browserSupabase } from "@/lib/supabase-browser";
 
-type ProfileData = {
+type WaterEntry = {
   id: string;
-  username: string | null;
-  displayName: string;
-  bio: string;
-  friendsCanViewSummary: boolean;
-  createdAt: string;
-  email: string;
+  created_at: string;
+  amount_oz: number;
+  source: "nfc" | "manual";
+  bottle_name: string;
 };
 
-type ProfileStats = {
-  totalEntries: number;
-  totalOunces: number;
-  currentStreak: number;
-  longestStreak: number;
-  dailyGoalOz: number;
+type ProfileResponse = {
+  profile?: {
+    display_name?: string | null;
+    username?: string | null;
+  } | null;
+  entries?: WaterEntry[];
+  settings?: {
+    daily_goal_oz?: number;
+  } | null;
 };
 
-type Accomplishment = {
+type Achievement = {
   key: string;
   title: string;
   description: string;
   unlocked: boolean;
-  unlockedAt: string | null;
+  progress: number;
+  target: number;
+  icon: string;
 };
 
-type ProfileResponse = {
-  profile: ProfileData;
-  stats: ProfileStats;
-  accomplishments: Accomplishment[];
-};
-
-function formatMemberDate(timestamp: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "long",
-    year: "numeric",
-  }).format(new Date(timestamp));
-}
-
-function authorizedFetch(
+async function authorizedFetch(
   path: string,
   accessToken: string,
   options: RequestInit = {},
@@ -58,76 +47,252 @@ function authorizedFetch(
   });
 }
 
+function getEasternDateKey(value: string | Date) {
+  const date = typeof value === "string" ? new Date(value) : value;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+
+  return `${year}-${month}-${day}`;
+}
+
+function formatFullDate(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
+function calculateLongestGoalStreak(
+  dayTotals: Array<{ dateKey: string; ounces: number }>,
+  dailyGoalOz: number,
+) {
+  let longest = 0;
+  let current = 0;
+
+  for (const day of dayTotals) {
+    if (day.ounces >= dailyGoalOz) {
+      current += 1;
+      if (current > longest) longest = current;
+    } else {
+      current = 0;
+    }
+  }
+
+  return longest;
+}
+
+function clampProgress(value: number, target: number) {
+  if (target <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round((value / target) * 100)));
+}
+
+function buildAchievements(params: {
+  totalLogs: number;
+  totalOz: number;
+  goalDays: number;
+  longestGoalStreak: number;
+  bestDayOz: number;
+  dailyGoalOz: number;
+}) {
+  const {
+    totalLogs,
+    totalOz,
+    goalDays,
+    longestGoalStreak,
+    bestDayOz,
+    dailyGoalOz,
+  } = params;
+
+  const achievements: Achievement[] = [
+    {
+      key: "first-log",
+      title: "First log",
+      description: "Logged hydration for the first time.",
+      unlocked: totalLogs >= 1,
+      progress: Math.min(totalLogs, 1),
+      target: 1,
+      icon: "💧",
+    },
+    {
+      key: "thirty-logs",
+      title: "30 logs",
+      description: "Logged water 30 times.",
+      unlocked: totalLogs >= 30,
+      progress: Math.min(totalLogs, 30),
+      target: 30,
+      icon: "📝",
+    },
+    {
+      key: "lifetime-1000",
+      title: "1000 oz club",
+      description: "Reached 1000 lifetime ounces.",
+      unlocked: totalOz >= 1000,
+      progress: Math.min(totalOz, 1000),
+      target: 1000,
+      icon: "🏆",
+    },
+    {
+      key: "first-goal-day",
+      title: "First goal day",
+      description: "Hit your daily hydration goal once.",
+      unlocked: goalDays >= 1,
+      progress: Math.min(goalDays, 1),
+      target: 1,
+      icon: "🎯",
+    },
+    {
+      key: "five-goal-days",
+      title: "5 goal days",
+      description: "Hit your daily goal on 5 separate days.",
+      unlocked: goalDays >= 5,
+      progress: Math.min(goalDays, 5),
+      target: 5,
+      icon: "✅",
+    },
+    {
+      key: "ten-goal-days",
+      title: "10 goal days",
+      description: "Hit your daily goal on 10 separate days.",
+      unlocked: goalDays >= 10,
+      progress: Math.min(goalDays, 10),
+      target: 10,
+      icon: "🌟",
+    },
+    {
+      key: "streak-3",
+      title: "3-day streak",
+      description: "Reached your goal 3 days in a row.",
+      unlocked: longestGoalStreak >= 3,
+      progress: Math.min(longestGoalStreak, 3),
+      target: 3,
+      icon: "🔥",
+    },
+    {
+      key: "streak-5",
+      title: "5-day streak",
+      description: "Reached your goal 5 days in a row.",
+      unlocked: longestGoalStreak >= 5,
+      progress: Math.min(longestGoalStreak, 5),
+      target: 5,
+      icon: "⚡",
+    },
+    {
+      key: "streak-7",
+      title: "7-day streak",
+      description: "Reached your goal 7 days in a row.",
+      unlocked: longestGoalStreak >= 7,
+      progress: Math.min(longestGoalStreak, 7),
+      target: 7,
+      icon: "👑",
+    },
+    {
+      key: "best-day-over-goal",
+      title: "Above and beyond",
+      description: "Logged a best day above your target.",
+      unlocked: bestDayOz > dailyGoalOz,
+      progress: Math.min(bestDayOz, dailyGoalOz + 1),
+      target: dailyGoalOz + 1,
+      icon: "🚀",
+    },
+  ];
+
+  return achievements;
+}
+
+function getProfileName(displayName: string, username: string) {
+  if (displayName.trim()) return displayName.trim();
+  if (username.trim()) return username.trim();
+  return "Hydration user";
+}
+
+function getInitials(displayName: string, username: string) {
+  const source = getProfileName(displayName, username);
+  const parts = source.split(/\s+/).filter(Boolean);
+
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+
+  return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+}
+
 export default function ProfilePage() {
-  const router = useRouter();
-
   const [accessToken, setAccessToken] = useState("");
-  const [profileData, setProfileData] = useState<ProfileResponse | null>(
-    null,
-  );
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
-  const [statusMessage, setStatusMessage] = useState("");
-
   const [displayName, setDisplayName] = useState("");
   const [username, setUsername] = useState("");
-  const [bio, setBio] = useState("");
-  const [friendsCanViewSummary, setFriendsCanViewSummary] = useState(true);
+  const [draftDisplayName, setDraftDisplayName] = useState("");
+  const [draftUsername, setDraftUsername] = useState("");
+  const [entries, setEntries] = useState<WaterEntry[]>([]);
+  const [dailyGoalOz, setDailyGoalOz] = useState(96);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [isLockerOpen, setIsLockerOpen] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
     let isMounted = true;
 
     async function loadProfile() {
-      const {
-        data: { session },
-      } = await browserSupabase.auth.getSession();
-
-      if (!session) {
-        window.location.replace("/login");
-        return;
-      }
-
-      if (!isMounted) {
-        return;
-      }
-
-      setAccessToken(session.access_token);
-
       try {
-        const response = await authorizedFetch(
-          "/api/profile",
-          session.access_token,
-        );
+        const {
+          data: { session },
+          error,
+        } = await browserSupabase.auth.getSession();
 
-        if (!response.ok) {
-          throw new Error("Unable to load profile.");
-        }
+        if (error) throw error;
 
-        const data: ProfileResponse = await response.json();
-
-        if (!isMounted) {
+        if (!session) {
+          window.location.replace("/login");
           return;
         }
 
-        setProfileData(data);
-        setDisplayName(data.profile.displayName);
-        setUsername(data.profile.username ?? "");
-        setBio(data.profile.bio);
-        setFriendsCanViewSummary(data.profile.friendsCanViewSummary);
-      } catch {
+        if (!isMounted) return;
+
+        setAccessToken(session.access_token);
+
+        const response = await authorizedFetch("/api/profile", session.access_token);
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || "Unable to load profile.");
+        }
+
+        const data = (await response.json()) as ProfileResponse;
+        const loadedDisplayName = data.profile?.display_name ?? "";
+        const loadedUsername = data.profile?.username ?? "";
+
+        setDisplayName(loadedDisplayName);
+        setUsername(loadedUsername);
+        setDraftDisplayName(loadedDisplayName);
+        setDraftUsername(loadedUsername);
+        setEntries(Array.isArray(data.entries) ? data.entries : []);
+        setDailyGoalOz(Number(data.settings?.daily_goal_oz ?? 96));
+      } catch (error) {
+        console.error(error);
         if (isMounted) {
-          setErrorMessage("Could not load your profile.");
+          setErrorMessage(
+            error instanceof Error ? error.message : "Could not load your profile.",
+          );
         }
       } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
+        if (isMounted) setIsLoading(false);
       }
     }
 
-    loadProfile();
+    void loadProfile();
 
     return () => {
       isMounted = false;
@@ -136,26 +301,19 @@ export default function ProfilePage() {
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    if (!accessToken) {
-      return;
-    }
+    if (!accessToken) return;
 
     setIsSaving(true);
-    setErrorMessage("");
     setStatusMessage("");
+    setErrorMessage("");
 
     try {
       const response = await authorizedFetch("/api/profile", accessToken, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          displayName,
-          username,
-          bio,
-          friendsCanViewSummary,
+          displayName: draftDisplayName.trim(),
+          username: draftUsername.trim(),
         }),
       });
 
@@ -165,363 +323,417 @@ export default function ProfilePage() {
         throw new Error(data.error || "Unable to save profile.");
       }
 
-      setProfileData((currentData) => {
-        if (!currentData) {
-          return currentData;
-        }
-
-        return {
-          ...currentData,
-          profile: data.profile,
-        };
-      });
-
-      setDisplayName(data.profile.displayName);
-      setUsername(data.profile.username ?? "");
-      setBio(data.profile.bio);
-      setFriendsCanViewSummary(data.profile.friendsCanViewSummary);
-      setIsEditing(false);
-      setStatusMessage("Profile saved.");
+      setDisplayName(data.profile?.display_name ?? draftDisplayName.trim());
+      setUsername(data.profile?.username ?? draftUsername.trim());
+      setDraftDisplayName(data.profile?.display_name ?? draftDisplayName.trim());
+      setDraftUsername(data.profile?.username ?? draftUsername.trim());
+      setIsEditingProfile(false);
+      setStatusMessage("Profile updated successfully.");
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : "Unable to save profile.",
+        error instanceof Error ? error.message : "Could not save profile.",
       );
     } finally {
       setIsSaving(false);
     }
   }
 
-  function cancelEditing() {
-    if (!profileData) {
-      return;
-    }
-
-    setDisplayName(profileData.profile.displayName);
-    setUsername(profileData.profile.username ?? "");
-    setBio(profileData.profile.bio);
-    setFriendsCanViewSummary(profileData.profile.friendsCanViewSummary);
-    setIsEditing(false);
+  function cancelEdit() {
+    setDraftDisplayName(displayName);
+    setDraftUsername(username);
+    setIsEditingProfile(false);
   }
 
-  async function signOut() {
-    await browserSupabase.auth.signOut();
-    router.replace("/login");
-  }
+  const {
+    totalLogs,
+    totalOz,
+    goalDays,
+    bestDay,
+    longestGoalStreak,
+    achievements,
+    unlockedAchievements,
+    lockedAchievements,
+  } = useMemo(() => {
+    const totalLogs = entries.length;
+    const totalOz = entries.reduce(
+      (sum, entry) => sum + Number(entry.amount_oz),
+      0,
+    );
+
+    const ouncesByDate = entries.reduce<Record<string, number>>((totals, entry) => {
+      const dateKey = getEasternDateKey(entry.created_at);
+      totals[dateKey] = (totals[dateKey] ?? 0) + Number(entry.amount_oz);
+      return totals;
+    }, {});
+
+    const dayTotals = Object.entries(ouncesByDate)
+      .map(([dateKey, ounces]) => ({ dateKey, ounces }))
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+
+    const goalDays = dayTotals.filter((day) => day.ounces >= dailyGoalOz).length;
+
+    const bestDay =
+      dayTotals.length > 0
+        ? dayTotals.reduce((best, day) => (day.ounces > best.ounces ? day : best))
+        : null;
+
+    const longestGoalStreak = calculateLongestGoalStreak(dayTotals, dailyGoalOz);
+
+    const achievements = buildAchievements({
+      totalLogs,
+      totalOz,
+      goalDays,
+      longestGoalStreak,
+      bestDayOz: bestDay?.ounces ?? 0,
+      dailyGoalOz,
+    });
+
+    const unlockedAchievements = achievements.filter(
+      (achievement) => achievement.unlocked,
+    );
+    const lockedAchievements = achievements.filter(
+      (achievement) => !achievement.unlocked,
+    );
+
+    return {
+      totalLogs,
+      totalOz,
+      goalDays,
+      bestDay,
+      longestGoalStreak,
+      achievements,
+      unlockedAchievements,
+      lockedAchievements,
+    };
+  }, [dailyGoalOz, entries]);
+
+  const profileName = getProfileName(displayName, username);
+  const initials = getInitials(displayName, username);
 
   if (isLoading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-5 text-slate-600">
+      <main className="flex min-h-screen items-center justify-center bg-[#0b0e13] px-5 text-slate-400">
         Loading profile…
       </main>
     );
   }
 
-  if (!profileData) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-5 text-slate-600">
-        {errorMessage || "Profile unavailable."}
-      </main>
-    );
-  }
-
-  const { profile, stats, accomplishments } = profileData;
-
   return (
-    <main className="min-h-screen bg-slate-50 px-5 py-10 text-slate-900">
-      <div className="mx-auto max-w-md">
-        <header className="mb-8 flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium text-sky-600">Water Tracker</p>
+    <main className="min-h-screen bg-[#0b0e13] px-4 py-6 text-slate-100 sm:px-6 sm:py-10">
+      <div className="mx-auto max-w-5xl">
+        <TopNav />
 
-            <h1 className="mt-1 text-3xl font-bold tracking-tight">
-              Your profile
-            </h1>
-          </div>
-
-          <button
-            type="button"
-            onClick={signOut}
-            className="text-sm font-semibold text-slate-500 underline underline-offset-4 hover:text-slate-900"
-          >
-            Sign out
-          </button>
-        </header>
-
-        <nav className="mb-6 flex rounded-2xl bg-white p-1 shadow-sm ring-1 ring-slate-200">
-          <Link
-            href="/"
-            className="flex-1 rounded-xl px-3 py-2 text-center text-sm font-semibold text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"
-          >
-            Dashboard
-          </Link>
-
-          <Link
-            href="/profile"
-            className="flex-1 rounded-xl bg-sky-600 px-3 py-2 text-center text-sm font-semibold text-white"
-          >
-            Profile
-          </Link>
-        </nav>
-
-        <section className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-4">
-              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-sky-100 text-2xl font-bold text-sky-700">
-                {profile.displayName.slice(0, 1).toUpperCase()}
+        <section className="rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
+          <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-4">
+              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-cyan-300 to-blue-500 text-2xl font-bold text-[#071015] shadow-lg shadow-cyan-500/20">
+                {initials}
               </div>
 
-              <div className="min-w-0">
-                <h2 className="truncate text-xl font-bold">
-                  {profile.displayName}
-                </h2>
-
-                <p className="mt-1 truncate text-sm text-slate-500">
-                  {profile.username ? `@${profile.username}` : profile.email}
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">
+                  Profile
                 </p>
-
-                <p className="mt-1 text-xs text-slate-400">
-                  Member since {formatMemberDate(profile.createdAt)}
+                <h1 className="mt-1 text-2xl font-semibold text-white">
+                  {profileName}
+                </h1>
+                <p className="mt-1 text-sm text-slate-400">
+                  {username ? `@${username}` : "Set a username to personalize your profile"}
                 </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <span className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.08] px-3 py-1 text-xs font-semibold text-cyan-200">
+                    {unlockedAchievements.length} achievements
+                  </span>
+                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs font-semibold text-slate-400">
+                    {totalOz} lifetime oz
+                  </span>
+                </div>
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setIsEditing((editing) => !editing)}
-              className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
-            >
-              {isEditing ? "Close" : "Edit"}
-            </button>
+            {!isEditingProfile ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setDraftDisplayName(displayName);
+                  setDraftUsername(username);
+                  setIsEditingProfile(true);
+                }}
+                className="rounded-lg border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white"
+              >
+                Edit profile
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={cancelEdit}
+                className="rounded-lg border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white"
+              >
+                Cancel
+              </button>
+            )}
           </div>
 
-          {profile.bio && !isEditing && (
-            <p className="mt-5 text-sm leading-6 text-slate-600">
-              {profile.bio}
-            </p>
-          )}
-
-          {isEditing && (
-            <form className="mt-6 space-y-4" onSubmit={saveProfile}>
+          {isEditingProfile && (
+            <form className="mt-6 grid gap-4 border-t border-white/10 pt-5" onSubmit={saveProfile}>
               <label className="block">
-                <span className="text-sm font-semibold text-slate-700">
-                  Display name
-                </span>
-
+                <span className="text-sm font-medium text-slate-300">Display name</span>
                 <input
                   type="text"
-                  value={displayName}
-                  onChange={(event) => setDisplayName(event.target.value)}
                   maxLength={60}
-                  required
-                  className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                  value={draftDisplayName}
+                  onChange={(event) => setDraftDisplayName(event.target.value)}
+                  className="mt-2 w-full rounded-lg border border-white/10 bg-[#0b0e13] px-3 py-2.5 text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
+                  placeholder="Your display name"
                 />
               </label>
 
               <label className="block">
-                <span className="text-sm font-semibold text-slate-700">
-                  Username
-                </span>
-
+                <span className="text-sm font-medium text-slate-300">Username</span>
                 <input
                   type="text"
-                  value={username}
-                  onChange={(event) =>
-                    setUsername(
-                      event.target.value
-                        .toLowerCase()
-                        .replace(/[^a-z0-9_]/g, ""),
-                    )
-                  }
-                  placeholder="jack_covino"
-                  minLength={3}
-                  maxLength={24}
-                  className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                  maxLength={30}
+                  value={draftUsername}
+                  onChange={(event) => setDraftUsername(event.target.value)}
+                  className="mt-2 w-full rounded-lg border border-white/10 bg-[#0b0e13] px-3 py-2.5 text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
+                  placeholder="your_username"
                 />
-
-                <p className="mt-2 text-xs text-slate-500">
-                  3–24 lowercase letters, numbers, or underscores.
-                </p>
-              </label>
-
-              <label className="block">
-                <span className="text-sm font-semibold text-slate-700">
-                  Bio
-                </span>
-
-                <textarea
-                  value={bio}
-                  onChange={(event) => setBio(event.target.value)}
-                  maxLength={160}
-                  rows={3}
-                  placeholder="Runner, lifter, hydration enthusiast…"
-                  className="mt-2 w-full resize-none rounded-xl border border-slate-300 px-3 py-2.5 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
-                />
-
-                <p className="mt-2 text-right text-xs text-slate-500">
-                  {bio.length}/160
-                </p>
-              </label>
-
-              <label className="flex cursor-pointer items-start gap-3 rounded-xl bg-slate-50 p-4">
-                <input
-                  type="checkbox"
-                  checked={friendsCanViewSummary}
-                  onChange={(event) =>
-                    setFriendsCanViewSummary(event.target.checked)
-                  }
-                  className="mt-1 h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                />
-
-                <span>
-                  <span className="block text-sm font-semibold text-slate-800">
-                    Share daily summary with friends
-                  </span>
-
-                  <span className="mt-1 block text-xs leading-5 text-slate-500">
-                    Friends can see your daily total, goal progress, and streak.
-                    They cannot see individual drink timestamps.
-                  </span>
-                </span>
               </label>
 
               <div className="flex gap-3 pt-2">
                 <button
                   type="submit"
                   disabled={isSaving}
-                  className="flex-1 rounded-xl bg-sky-600 px-4 py-3 font-bold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-lg bg-cyan-300 px-4 py-3 text-sm font-bold text-[#071015] transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isSaving ? "Saving..." : "Save profile"}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={cancelEditing}
-                  disabled={isSaving}
-                  className="rounded-xl bg-slate-100 px-4 py-3 font-bold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Cancel
+                  {isSaving ? "Saving…" : "Save changes"}
                 </button>
               </div>
             </form>
           )}
         </section>
 
+        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Best day
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {bestDay?.ounces ?? 0}
+              <span className="ml-1 text-sm text-slate-500">oz</span>
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              {bestDay ? formatFullDate(`${bestDay.dateKey}T12:00:00`) : "No logs yet"}
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Lifetime ounces
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {totalOz}
+              <span className="ml-1 text-sm text-slate-500">oz</span>
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Total logs
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-white">{totalLogs}</p>
+          </div>
+
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Longest streak
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {longestGoalStreak}
+              <span className="ml-1 text-sm text-slate-500">days</span>
+            </p>
+          </div>
+        </section>
+
+        <section className="mt-5 grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
+          <div className="rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">
+                  Achievement progress
+                </p>
+                <h2 className="mt-2 text-xl font-semibold text-white">
+                  Next unlocks
+                </h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  Keep going — these milestones are still in progress.
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-cyan-300/20 bg-cyan-300/[0.08] px-3 py-2 text-right">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-200/80">
+                  Total unlocked
+                </p>
+                <p className="mt-1 text-lg font-semibold text-white">
+                  {unlockedAchievements.length}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 grid gap-3">
+              {lockedAchievements.length === 0 ? (
+                <div className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4">
+                  <p className="text-sm font-semibold text-emerald-200">
+                    Everything unlocked
+                  </p>
+                  <p className="mt-1 text-sm text-slate-300">
+                    You have completed every current achievement.
+                  </p>
+                </div>
+              ) : (
+                lockedAchievements.map((achievement) => (
+                  <div
+                    key={achievement.key}
+                    className="rounded-xl border border-white/10 bg-[#0b0e13] p-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-lg">
+                          {achievement.icon}
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-200">
+                            {achievement.title}
+                          </p>
+                          <p className="mt-1 text-sm text-slate-500">
+                            {achievement.description}
+                          </p>
+                        </div>
+                      </div>
+
+                      <span className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                        Locked
+                      </span>
+                    </div>
+
+                    <div className="mt-4">
+                      <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
+                        <span>
+                          {achievement.progress} / {achievement.target}
+                        </span>
+                        <span>{clampProgress(achievement.progress, achievement.target)}%</span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-teal-300 transition-all duration-500"
+                          style={{
+                            width: `${clampProgress(
+                              achievement.progress,
+                              achievement.target,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-200/80">
+                  Achievement locker
+                </p>
+                <h2 className="mt-2 text-xl font-semibold text-white">
+                  Collected badges
+                </h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  View every milestone you have already unlocked.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsLockerOpen((current) => !current)}
+                className="rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white"
+              >
+                {isLockerOpen ? "Hide" : "Open"}
+              </button>
+            </div>
+
+            <div className="mt-5 rounded-xl border border-amber-300/15 bg-amber-300/[0.05] p-4">
+              <p className="text-sm text-slate-300">
+                You have unlocked{" "}
+                <span className="font-semibold text-white">
+                  {unlockedAchievements.length}
+                </span>{" "}
+                of{" "}
+                <span className="font-semibold text-white">
+                  {achievements.length}
+                </span>{" "}
+                achievements and reached your goal on{" "}
+                <span className="font-semibold text-white">{goalDays}</span> total days.
+              </p>
+            </div>
+
+            {isLockerOpen && (
+              <div className="mt-4 grid gap-3">
+                {unlockedAchievements.length === 0 ? (
+                  <div className="rounded-xl border border-white/10 bg-[#0b0e13] p-4">
+                    <p className="text-sm font-semibold text-slate-300">
+                      No badges unlocked yet
+                    </p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Log your first bottle to start your collection.
+                    </p>
+                  </div>
+                ) : (
+                  unlockedAchievements.map((achievement) => (
+                    <div
+                      key={achievement.key}
+                      className="rounded-xl border border-cyan-300/20 bg-cyan-300/[0.06] p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-300 text-lg text-[#071015]">
+                            {achievement.icon}
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-white">
+                              {achievement.title}
+                            </p>
+                            <p className="mt-1 text-sm text-slate-400">
+                              {achievement.description}
+                            </p>
+                          </div>
+                        </div>
+
+                        <span className="rounded-full bg-cyan-300 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-[#071015]">
+                          Unlocked
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+
         {statusMessage && (
-          <p className="mt-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700 ring-1 ring-emerald-200">
+          <p className="mt-5 rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-4 py-3 text-sm font-medium text-emerald-200">
             {statusMessage}
           </p>
         )}
 
         {errorMessage && (
-          <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700 ring-1 ring-red-200">
+          <p className="mt-5 rounded-lg border border-red-300/20 bg-red-300/10 px-4 py-3 text-sm font-medium text-red-200">
             {errorMessage}
           </p>
         )}
-
-        <section className="mt-6 grid grid-cols-2 gap-4">
-          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <p className="text-sm font-medium text-slate-500">
-              Current streak
-            </p>
-
-            <p className="mt-2 text-3xl font-bold text-sky-700">
-              {stats.currentStreak}
-              <span className="ml-1 text-base text-slate-400">days</span>
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <p className="text-sm font-medium text-slate-500">
-              Longest streak
-            </p>
-
-            <p className="mt-2 text-3xl font-bold text-sky-700">
-              {stats.longestStreak}
-              <span className="ml-1 text-base text-slate-400">days</span>
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <p className="text-sm font-medium text-slate-500">
-              Total hydration
-            </p>
-
-            <p className="mt-2 text-3xl font-bold">
-              {stats.totalOunces.toLocaleString()}
-              <span className="ml-1 text-base text-slate-400">oz</span>
-            </p>
-          </div>
-
-          <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <p className="text-sm font-medium text-slate-500">
-              Bottles logged
-            </p>
-
-            <p className="mt-2 text-3xl font-bold">
-              {stats.totalEntries.toLocaleString()}
-            </p>
-          </div>
-        </section>
-
-        <section className="mt-8">
-          <div className="flex items-end justify-between">
-            <div>
-              <p className="text-sm font-medium text-sky-600">
-                Accomplishments
-              </p>
-
-              <h2 className="mt-1 text-2xl font-bold tracking-tight">
-                Keep the current flowing
-              </h2>
-            </div>
-
-            <p className="text-sm text-slate-500">
-              {accomplishments.filter((item) => item.unlocked).length}/
-              {accomplishments.length}
-            </p>
-          </div>
-
-          <div className="mt-4 space-y-3">
-            {accomplishments.map((accomplishment) => (
-              <article
-                key={accomplishment.key}
-                className={`rounded-2xl p-4 shadow-sm ring-1 ${
-                  accomplishment.unlocked
-                    ? "bg-sky-50 ring-sky-200"
-                    : "bg-white ring-slate-200"
-                }`}
-              >
-                <div className="flex items-center gap-4">
-                  <div
-                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-lg ${
-                      accomplishment.unlocked
-                        ? "bg-sky-600 text-white"
-                        : "bg-slate-100 text-slate-400"
-                    }`}
-                  >
-                    {accomplishment.unlocked ? "✓" : "○"}
-                  </div>
-
-                  <div>
-                    <h3
-                      className={
-                        accomplishment.unlocked
-                          ? "font-bold text-sky-950"
-                          : "font-bold text-slate-700"
-                      }
-                    >
-                      {accomplishment.title}
-                    </h3>
-
-                    <p className="mt-1 text-sm text-slate-500">
-                      {accomplishment.description}
-                    </p>
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
       </div>
     </main>
   );
