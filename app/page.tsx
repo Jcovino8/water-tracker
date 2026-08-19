@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { HydrationPaceCard } from "@/components/HydrationPaceCard";
 import TopNav from "@/components/top-nav";
 import {
@@ -19,6 +19,14 @@ const defaultDailyGoalOz = 96;
 const defaultBottleSizeOz = 25;
 const commonBottleSizes = [16.9, 20, 25];
 
+const quickDrinkPresets = [
+  { key: "coffee", name: "Black coffee", amountOz: 8 },
+  { key: "espresso", name: "Espresso", amountOz: 2 },
+  { key: "seltzer", name: "Seltzer", amountOz: 12 },
+  { key: "sparkling-water", name: "Sparkling water", amountOz: 16.9 },
+  { key: "green-tea", name: "Green tea", amountOz: 12 },
+] as const;
+
 type WaterEntry = {
   id: string;
   created_at: string;
@@ -27,14 +35,24 @@ type WaterEntry = {
   bottle_name: string;
 };
 
+type FavoriteDrink = {
+  key: string;
+  name: string;
+  amountOz: number;
+};
+
 type TrackerSettings = {
   dailyGoalOz: number;
   bottleSizeOz: number;
+  favoriteDrink: FavoriteDrink | null;
 };
 
 type TrackerSettingsApiResponse = {
   daily_goal_oz: number;
   bottle_size_oz: number;
+  favorite_drink_key?: string | null;
+  favorite_drink_name?: string | null;
+  favorite_drink_oz?: number | null;
   updated_at: string;
 };
 
@@ -88,9 +106,21 @@ function getEasternDateKey(value: string | Date) {
 }
 
 function normalizeSettings(settings: TrackerSettingsApiResponse): TrackerSettings {
+  const favoriteDrink =
+    settings.favorite_drink_key &&
+    settings.favorite_drink_name &&
+    settings.favorite_drink_oz
+      ? {
+          key: String(settings.favorite_drink_key),
+          name: String(settings.favorite_drink_name),
+          amountOz: Number(settings.favorite_drink_oz),
+        }
+      : null;
+
   return {
     dailyGoalOz: Number(settings.daily_goal_oz),
     bottleSizeOz: Number(settings.bottle_size_oz),
+    favoriteDrink,
   };
 }
 
@@ -144,6 +174,14 @@ function buildChartTicks(maxValue: number) {
   return { top, ticks };
 }
 
+function slugifyDrinkKey(name: string, amountOz: number) {
+  return `${name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")}-${String(amountOz).replace(".", "-")}`;
+}
+
 async function authorizedFetch(
   path: string,
   accessToken: string,
@@ -177,7 +215,9 @@ function TrendTooltip({
       <p className="text-xs font-medium text-slate-400">{day.fullLabel}</p>
       <p className="mt-1 text-lg font-semibold text-white">{day.ounces} oz</p>
       <p className={`mt-0.5 text-xs ${metGoal ? "text-emerald-300" : "text-slate-400"}`}>
-        {metGoal ? "Goal reached" : `${Math.max(Math.round(dailyGoalOz - day.ounces), 0)} oz below goal`}
+        {metGoal
+          ? "Goal reached"
+          : `${Math.max(Math.round(dailyGoalOz - day.ounces), 0)} oz below goal`}
       </p>
     </div>
   );
@@ -212,10 +252,13 @@ export default function Home() {
   const [userId, setUserId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [manualAmountOz, setManualAmountOz] = useState(String(defaultBottleSizeOz));
+  const [manualDrinkName, setManualDrinkName] = useState("");
+  const [isQuickSelectOpen, setIsQuickSelectOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingEntry, setIsSavingEntry] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isSavingFavorite, setIsSavingFavorite] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
@@ -223,11 +266,13 @@ export default function Home() {
   const [settings, setSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
+    favoriteDrink: null,
   });
 
   const [draftSettings, setDraftSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
+    favoriteDrink: null,
   });
 
   const loadDashboardData = useCallback(async (token: string) => {
@@ -417,13 +462,113 @@ export default function Home() {
         : `Your 7-day average is ${weeklyAverageOz} oz — ${settings.dailyGoalOz - weeklyAverageOz} oz below target.`;
 
   const manualAmount = Number(manualAmountOz);
-  const canLogManualAmount = Number.isFinite(manualAmount) && manualAmount > 0 && manualAmount <= 512;
-  const quickLogSizes = Array.from(
-    new Set([...commonBottleSizes, settings.bottleSizeOz]),
-  ).sort((a, b) => a - b);
+  const trimmedManualDrinkName = (manualDrinkName ?? "").trim();  const canLogManualAmount =
+    Number.isFinite(manualAmount) && manualAmount > 0 && manualAmount <= 512;
 
-  async function logManualBottle() {
-    if (!accessToken || !canLogManualAmount) {
+  const favoriteDrinkPreset = useMemo(() => {
+    if (!settings.favoriteDrink) return null;
+
+    return {
+      key: settings.favoriteDrink.key,
+      name: settings.favoriteDrink.name,
+      amountOz: settings.favoriteDrink.amountOz,
+    };
+  }, [settings.favoriteDrink]);
+
+  const quickLogSizes = useMemo(() => {
+    const sizeButtons = Array.from(
+      new Set([...commonBottleSizes, settings.bottleSizeOz]),
+    )
+      .sort((a, b) => a - b)
+      .map((size) => ({
+        type: "size" as const,
+        key: `size-${size}`,
+        label: `${formatOunces(size)} oz${size === settings.bottleSizeOz ? " · My bottle" : ""}`,
+        amountOz: size,
+      }));
+
+    if (!favoriteDrinkPreset) {
+      return sizeButtons;
+    }
+
+    return [
+      ...sizeButtons,
+      {
+        type: "favorite-drink" as const,
+        key: `favorite-${favoriteDrinkPreset.key}`,
+        label: `${favoriteDrinkPreset.name} · ${formatOunces(favoriteDrinkPreset.amountOz)} oz`,
+        amountOz: favoriteDrinkPreset.amountOz,
+        drinkName: favoriteDrinkPreset.name,
+      },
+    ];
+  }, [favoriteDrinkPreset, settings.bottleSizeOz]);
+
+  const collapsibleQuickDrinks = useMemo(() => {
+    return quickDrinkPresets.filter(
+      (drink) => drink.key !== settings.favoriteDrink?.key,
+    );
+  }, [settings.favoriteDrink]);
+
+  async function persistFavoriteDrink(nextFavoriteDrink: FavoriteDrink | null) {
+    if (!accessToken) return;
+
+    setIsSavingFavorite(true);
+    setErrorMessage("");
+    setStatusMessage("");
+
+    try {
+      const response = await authorizedFetch(
+        "/api/tracker-settings",
+        accessToken,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            dailyGoalOz: Number(settings.dailyGoalOz),
+            bottleSizeOz: Number(settings.bottleSizeOz),
+            favoriteDrink: nextFavoriteDrink
+              ? {
+                  key: nextFavoriteDrink.key,
+                  name: nextFavoriteDrink.name,
+                  amountOz: nextFavoriteDrink.amountOz,
+                }
+              : null,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Unable to save favorite drink.");
+      }
+
+      const data = await response.json();
+      const updatedSettings = normalizeSettings(data.settings);
+      setSettings(updatedSettings);
+      setDraftSettings(updatedSettings);
+      setStatusMessage(
+        nextFavoriteDrink
+          ? `${nextFavoriteDrink.name} pinned to quick add.`
+          : "Favorite drink removed.",
+      );
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not save favorite drink.",
+      );
+    } finally {
+      setIsSavingFavorite(false);
+    }
+  }
+
+  async function logManualBottle(
+    override?: { amountOz: number; bottleName: string; clearCustomDrink?: boolean },
+  ) {
+    const amountToLog = override?.amountOz ?? manualAmount;
+    const bottleName =
+      override?.bottleName ??
+      (trimmedManualDrinkName.length > 0 ? trimmedManualDrinkName : "Manual entry");
+
+    if (!accessToken || !Number.isFinite(amountToLog) || amountToLog <= 0 || amountToLog > 512) {
       setErrorMessage("Enter an amount between 0.1 and 512 oz.");
       return;
     }
@@ -437,9 +582,9 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          amountOz: manualAmount,
+          amountOz: amountToLog,
           source: "manual",
-          bottleName: "Manual entry",
+          bottleName,
         }),
       });
 
@@ -450,7 +595,10 @@ export default function Home() {
         setStatusMessage("Duplicate log ignored.");
       } else {
         setEntries((currentEntries) => [data.entry, ...currentEntries]);
-        setStatusMessage(`Logged ${formatOunces(manualAmount)} oz manually.`);
+        setStatusMessage(`Logged ${formatOunces(amountToLog)} oz from ${bottleName}.`);
+        if (override?.clearCustomDrink) {
+          setManualDrinkName("");
+        }
         await loadDashboardData(accessToken);
       }
     } catch {
@@ -458,6 +606,19 @@ export default function Home() {
     } finally {
       setIsSavingEntry(false);
     }
+  }
+
+  async function favoriteTypedDrink() {
+    if (!trimmedManualDrinkName || !canLogManualAmount) {
+      setErrorMessage("Enter a drink name and a valid ounce amount to favorite it.");
+      return;
+    }
+
+    await persistFavoriteDrink({
+      key: slugifyDrinkKey(trimmedManualDrinkName, manualAmount),
+      name: trimmedManualDrinkName,
+      amountOz: Number(manualAmount.toFixed(1)),
+    });
   }
 
   async function deleteEntry(entryId: string) {
@@ -512,6 +673,13 @@ export default function Home() {
           body: JSON.stringify({
             dailyGoalOz: Number(draftSettings.dailyGoalOz),
             bottleSizeOz: Number(draftSettings.bottleSizeOz),
+            favoriteDrink: draftSettings.favoriteDrink
+              ? {
+                  key: draftSettings.favoriteDrink.key,
+                  name: draftSettings.favoriteDrink.name,
+                  amountOz: draftSettings.favoriteDrink.amountOz,
+                }
+              : null,
           }),
         },
       );
@@ -645,7 +813,9 @@ export default function Home() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">Manual log</p>
               <h2 className="mt-2 text-xl font-semibold text-white">Add hydration</h2>
-              <p className="mt-1 text-sm text-slate-400">Log any amount when you finish a bottle, cup, or refill.</p>
+              <p className="mt-1 text-sm text-slate-400">
+                Log any amount when you finish a bottle, cup, or refill.
+              </p>
             </div>
             <p className="rounded-md border border-white/10 px-3 py-2 text-xs text-slate-400">
               Your bottle: {settings.bottleSizeOz} oz
@@ -653,27 +823,72 @@ export default function Home() {
           </div>
 
           <div className="mt-5 flex flex-wrap gap-2">
-            {quickLogSizes.map((size) => {
-              const isSelected = Number(manualAmountOz) === size;
+            {quickLogSizes.map((item) => {
+              if (item.type === "favorite-drink") {
+                return (
+                  <div
+                    key={item.key}
+                    className="flex items-center overflow-hidden rounded-lg border border-cyan-300/30 bg-cyan-300/[0.08]"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setManualDrinkName(item.drinkName);
+                        setManualAmountOz(String(item.amountOz));
+                      }}
+                      className="px-3 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/[0.08]"
+                    >
+                      {item.label}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void persistFavoriteDrink(null)}
+                      disabled={isSavingFavorite || !accessToken}
+                      className="border-l border-cyan-300/20 px-2.5 py-2 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-300/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label={`Remove favorite ${item.drinkName}`}
+                    >
+                      ★
+                    </button>
+                  </div>
+                );
+              }
+
+              const isSelected = Number(manualAmountOz) === item.amountOz && !trimmedManualDrinkName;
+
               return (
                 <button
-                  key={size}
+                  key={item.key}
                   type="button"
-                  onClick={() => setManualAmountOz(String(size))}
+                  onClick={() => {
+                    setManualAmountOz(String(item.amountOz));
+                    setManualDrinkName("");
+                  }}
                   className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
                     isSelected
                       ? "border-cyan-300 bg-cyan-300 text-[#071015]"
                       : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/20 hover:text-white"
                   }`}
                 >
-                  {formatOunces(size)} oz
-                  {size === settings.bottleSizeOz ? " · My bottle" : ""}
+                  {item.label}
                 </button>
               );
             })}
           </div>
 
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+          <div className="mt-4 flex flex-col gap-3 lg:flex-row">
+            <label className="relative flex-[1.2]">
+              <span className="sr-only">Drink name</span>
+              <input
+                type="text"
+                maxLength={80}
+                value={manualDrinkName}
+                onChange={(event) => setManualDrinkName(event.target.value)}
+                placeholder="Drink name (optional)"
+                className="w-full rounded-lg border border-white/10 bg-[#0b0e13] px-4 py-3 text-sm font-medium text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
+                aria-label="Drink name"
+              />
+            </label>
+
             <label className="relative flex-1">
               <span className="sr-only">Custom ounces</span>
               <input
@@ -688,33 +903,129 @@ export default function Home() {
               />
               <span className="pointer-events-none absolute right-4 top-3.5 text-sm font-medium text-slate-500">oz</span>
             </label>
+
             <button
               type="button"
-              onClick={logManualBottle}
+              onClick={() =>
+                void logManualBottle({
+                  clearCustomDrink: trimmedManualDrinkName.length > 0,
+                })
+              }
               disabled={isSavingEntry || !accessToken || !canLogManualAmount}
               className="rounded-lg bg-cyan-300 px-6 py-3 text-sm font-bold text-[#071015] transition hover:bg-cyan-200 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSavingEntry ? "Logging…" : `Log ${canLogManualAmount ? formatOunces(manualAmount) : ""} oz`}
             </button>
           </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setIsQuickSelectOpen((current) => !current)}
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-white/20 hover:text-white"
+              aria-expanded={isQuickSelectOpen}
+            >
+              <span>{isQuickSelectOpen ? "Hide quick select drinks" : "Quick select drinks"}</span>
+              <span className="text-xs text-slate-500">{isQuickSelectOpen ? "−" : "+"}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void favoriteTypedDrink()}
+              disabled={
+                isSavingFavorite ||
+                !accessToken ||
+                !trimmedManualDrinkName ||
+                !canLogManualAmount
+              }
+              className="rounded-lg border border-white/10 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Favorite typed drink
+            </button>
+          </div>
+
+          {isQuickSelectOpen && (
+            <div className="mt-4 rounded-xl border border-white/10 bg-[#0b0e13] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                  Quick select
+                </p>
+                {isSavingFavorite && (
+                  <span className="text-xs text-slate-500">Saving favorite…</span>
+                )}
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                {collapsibleQuickDrinks.map((drink) => (
+                  <div
+                    key={drink.key}
+                    className="flex items-center overflow-hidden rounded-lg border border-white/10 bg-white/[0.03]"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setManualDrinkName(drink.name);
+                        setManualAmountOz(String(drink.amountOz));
+                      }}
+                      disabled={isSavingEntry || !accessToken}
+                      className="px-3 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {drink.name} · {formatOunces(drink.amountOz)} oz
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void persistFavoriteDrink({
+                          key: drink.key,
+                          name: drink.name,
+                          amountOz: drink.amountOz,
+                        })
+                      }
+                      disabled={isSavingFavorite || !accessToken}
+                      aria-label={`Favorite ${drink.name}`}
+                      className="border-l border-white/10 px-2.5 py-2 text-xs font-semibold text-slate-500 transition hover:bg-white/[0.04] hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      ☆
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <p className="mt-3 text-xs text-slate-500">
+                Favorite one drink to pin it above with your core quick-add buttons. These logs do not change your water target yet.
+              </p>
+            </div>
+          )}
         </section>
 
         <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">7-day average</p>
-            <p className="mt-2 text-2xl font-semibold text-white">{weeklyAverageOz}<span className="ml-1 text-sm text-slate-500">oz</span></p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {weeklyAverageOz}
+              <span className="ml-1 text-sm text-slate-500">oz</span>
+            </p>
           </div>
           <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Goal days</p>
-            <p className="mt-2 text-2xl font-semibold text-white">{daysGoalHit}<span className="text-sm text-slate-500">/7</span></p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {daysGoalHit}
+              <span className="text-sm text-slate-500">/7</span>
+            </p>
           </div>
           <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Goal streak</p>
-            <p className="mt-2 text-2xl font-semibold text-white">{currentStreak}<span className="ml-1 text-sm text-slate-500">days</span></p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {currentStreak}
+              <span className="ml-1 text-sm text-slate-500">days</span>
+            </p>
           </div>
           <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Best day</p>
-            <p className="mt-2 text-2xl font-semibold text-white">{bestDay.ounces}<span className="ml-1 text-sm text-slate-500">oz</span></p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {bestDay.ounces}
+              <span className="ml-1 text-sm text-slate-500">oz</span>
+            </p>
           </div>
         </section>
 
@@ -723,7 +1034,9 @@ export default function Home() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">Trend view</p>
               <h2 className="mt-2 text-xl font-semibold text-white">Weekly hydration</h2>
-              <p className="mt-1 text-sm text-slate-400">Daily intake against your {settings.dailyGoalOz} oz target.</p>
+              <p className="mt-1 text-sm text-slate-400">
+                Daily intake against your {settings.dailyGoalOz} oz target.
+              </p>
             </div>
             <div className="rounded-md border border-white/10 px-3 py-2 text-right">
               <p className="text-xs text-slate-500">Weekly total</p>
@@ -850,6 +1163,34 @@ export default function Home() {
                 </label>
               </div>
 
+              <div className="rounded-xl border border-white/10 bg-[#0b0e13] p-4">
+                <p className="text-sm font-medium text-white">Favorite quick add</p>
+                <p className="mt-1 text-sm text-slate-400">
+                  Favorite a drink from the dashboard quick select area. It will stay pinned with your bottle-size buttons.
+                </p>
+                {draftSettings.favoriteDrink ? (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2">
+                    <p className="text-sm text-slate-200">
+                      {draftSettings.favoriteDrink.name} · {formatOunces(draftSettings.favoriteDrink.amountOz)} oz
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDraftSettings((currentSettings) => ({
+                          ...currentSettings,
+                          favoriteDrink: null,
+                        }))
+                      }
+                      className="rounded-md border border-white/10 px-2.5 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-white/20 hover:text-white"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-sm text-slate-500">No favorite drink selected yet.</p>
+                )}
+              </div>
+
               <div className="flex gap-3 pt-2">
                 <button
                   type="submit"
@@ -909,7 +1250,9 @@ export default function Home() {
                     {formatOunces(Number(entry.amount_oz))} oz
                   </p>
                   <p className="mt-1 text-sm text-slate-500">
-                    {formatTime(entry.created_at)}
+                    {entry.bottle_name && entry.bottle_name !== "Manual entry"
+                      ? `${entry.bottle_name} · ${formatTime(entry.created_at)}`
+                      : formatTime(entry.created_at)}
                   </p>
                 </div>
 

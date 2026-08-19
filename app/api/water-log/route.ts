@@ -218,7 +218,7 @@ export async function POST(request: Request) {
 
   const bottleName =
     typeof body.bottleName === "string" && body.bottleName.trim()
-      ? body.bottleName.trim()
+      ? body.bottleName.trim().slice(0, 80)
       : "CEMC";
 
   const source =
@@ -235,40 +235,42 @@ export async function POST(request: Request) {
     );
   }
 
-  const duplicateCutoff = new Date(Date.now() - 15_000).toISOString();
+  if (source === "nfc") {
+    const duplicateCutoff = new Date(Date.now() - 15_000).toISOString();
 
-  const { data: recentEntries, error: duplicateCheckError } = await supabase
-    .from("water_entries")
-    .select("id, created_at, amount_oz, source, bottle_name")
-    .eq("user_id", entryOwner.id)
-    .eq("amount_oz", amountOz)
-    .eq("source", source)
-    .eq("bottle_name", bottleName)
-    .gte("created_at", duplicateCutoff)
-    .order("created_at", { ascending: false })
-    .limit(1);
+    const { data: recentEntries, error: duplicateCheckError } = await supabase
+      .from("water_entries")
+      .select("id, created_at, amount_oz, source, bottle_name")
+      .eq("user_id", entryOwner.id)
+      .eq("amount_oz", Number(amountOz.toFixed(1)))
+      .eq("source", "nfc")
+      .eq("bottle_name", bottleName)
+      .gte("created_at", duplicateCutoff)
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-  if (duplicateCheckError) {
-    console.error("Failed duplicate-tap check:", duplicateCheckError);
+    if (duplicateCheckError) {
+      console.error("Failed duplicate-tap check:", duplicateCheckError);
 
-    return NextResponse.json(
-      { error: "Unable to validate recent water entries." },
-      { status: 500 },
-    );
-  }
+      return NextResponse.json(
+        { error: "Unable to validate recent water entries." },
+        { status: 500 },
+      );
+    }
 
-  if (recentEntries.length > 0) {
-    return NextResponse.json({
-      entry: recentEntries[0],
-      duplicate: true,
-    });
+    if (recentEntries.length > 0) {
+      return NextResponse.json({
+        entry: recentEntries[0],
+        duplicate: true,
+      });
+    }
   }
 
   const { data, error } = await supabase
     .from("water_entries")
     .insert({
       user_id: entryOwner.id,
-      amount_oz: amountOz,
+      amount_oz: Number(amountOz.toFixed(1)),
       source,
       bottle_name: bottleName,
     })

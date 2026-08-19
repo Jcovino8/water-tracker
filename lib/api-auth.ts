@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextRequest } from "next/server";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey =
+const supabaseKeyValue =
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -10,11 +10,14 @@ if (!supabaseUrl) {
   throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL.");
 }
 
-if (!supabaseKey) {
+if (!supabaseKeyValue) {
   throw new Error(
     "Missing NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY.",
   );
 }
+
+const validatedSupabaseUrl: string = supabaseUrl;
+const validatedSupabaseKey: string = supabaseKeyValue;
 
 export async function getAuthedSupabase(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
@@ -26,7 +29,7 @@ export async function getAuthedSupabase(request: NextRequest) {
     throw new Error("Missing bearer token.");
   }
 
-  const supabase = createClient(supabaseUrl, supabaseKey, {
+  const supabase = createClient(validatedSupabaseUrl, validatedSupabaseKey, {
     global: {
       headers: {
         Authorization: `Bearer ${token}`,
