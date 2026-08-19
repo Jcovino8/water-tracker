@@ -18,6 +18,7 @@ import { browserSupabase } from "@/lib/supabase-browser";
 const defaultDailyGoalOz = 96;
 const defaultBottleSizeOz = 25;
 const commonBottleSizes = [16.9, 20, 25];
+const earliestHistoryMonth = "2026-08";
 
 const quickDrinkPresets = [
   { key: "coffee", name: "Black coffee", amountOz: 8 },
@@ -61,6 +62,8 @@ type ProfileApiResponse = {
   } | null;
 };
 
+type SnapshotMode = "7-day" | "monthly";
+
 type TrendDay = {
   dateKey: string;
   label: string;
@@ -68,6 +71,14 @@ type TrendDay = {
   ounces: number;
   isToday: boolean;
   xLabel: string;
+};
+
+type CalendarDay = {
+  dateKey: string;
+  dayNumber: number;
+  ounces: number;
+  isToday: boolean;
+  isCurrentMonth: boolean;
 };
 
 function formatTime(timestamp: string) {
@@ -101,6 +112,98 @@ function getEasternDateKey(value: string | Date) {
   const day = parts.find((part) => part.type === "day")?.value;
 
   return `${year}-${month}-${day}`;
+}
+
+function getEasternMonthKey(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(date);
+
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+
+  return `${year}-${month}`;
+}
+
+function parseMonthKey(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  return { year, month };
+}
+
+function formatMonthLabel(monthKey: string) {
+  const { year, month } = parseMonthKey(monthKey);
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "long",
+    year: "numeric",
+  }).format(new Date(year, month - 1, 1, 12, 0, 0));
+}
+
+function getPreviousMonthKey(monthKey: string) {
+  const { year, month } = parseMonthKey(monthKey);
+  const date = new Date(year, month - 2, 1, 12, 0, 0);
+  return getEasternMonthKey(date);
+}
+
+function getNextMonthKey(monthKey: string) {
+  const { year, month } = parseMonthKey(monthKey);
+  const date = new Date(year, month, 1, 12, 0, 0);
+  return getEasternMonthKey(date);
+}
+
+function isFutureMonth(monthKey: string) {
+  return monthKey > getEasternMonthKey(new Date());
+}
+
+function getDaysInMonth(monthKey: string) {
+  const { year, month } = parseMonthKey(monthKey);
+  return new Date(year, month, 0).getDate();
+}
+
+function getMonthGrid(monthKey: string, ouncesByEasternDate: Record<string, number>, todayEastern: string) {
+  const { year, month } = parseMonthKey(monthKey);
+  const firstDay = new Date(year, month - 1, 1, 12, 0, 0);
+  const firstWeekday = firstDay.getDay();
+  const daysInMonth = getDaysInMonth(monthKey);
+
+  const cells: CalendarDay[] = [];
+
+  for (let index = 0; index < firstWeekday; index += 1) {
+    cells.push({
+      dateKey: `blank-start-${index}`,
+      dayNumber: 0,
+      ounces: 0,
+      isToday: false,
+      isCurrentMonth: false,
+    });
+  }
+
+  for (let dayNumber = 1; dayNumber <= daysInMonth; dayNumber += 1) {
+    const date = new Date(year, month - 1, dayNumber, 12, 0, 0);
+    const dateKey = getEasternDateKey(date);
+
+    cells.push({
+      dateKey,
+      dayNumber,
+      ounces: ouncesByEasternDate[dateKey] ?? 0,
+      isToday: dateKey === todayEastern,
+      isCurrentMonth: true,
+    });
+  }
+
+  while (cells.length % 7 !== 0) {
+    cells.push({
+      dateKey: `blank-end-${cells.length}`,
+      dayNumber: 0,
+      ounces: 0,
+      isToday: false,
+      isCurrentMonth: false,
+    });
+  }
+
+  return cells;
 }
 
 function normalizeSettings(settings: TrackerSettingsApiResponse): TrackerSettings {
@@ -249,6 +352,70 @@ function CustomDot(props: {
   );
 }
 
+function DayProgressDonut({
+  ounces,
+  goalOz,
+  isToday,
+}: {
+  ounces: number;
+  goalOz: number;
+  isToday: boolean;
+}) {
+  if (ounces <= 0) return null;
+
+  const ratio = Math.min(ounces / Math.max(goalOz, 1), 1);
+  const size = 60;
+  const strokeWidth = 8;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference * (1 - ratio);
+  const metGoal = ounces >= goalOz;
+
+  return (
+    <div className="relative flex h-[60px] w-[60px] items-center justify-center">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="rgba(255,255,255,0.08)"
+          strokeWidth={strokeWidth}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={metGoal ? "#34d399" : "#7dd3fc"}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+        />
+      </svg>
+
+      {metGoal ? (
+        <div
+          className={`absolute inset-[10px] rounded-full bg-emerald-400 ${
+            isToday ? "ring-2 ring-emerald-200/70" : ""
+          }`}
+        />
+      ) : (
+        <div
+          className={`absolute rounded-full bg-[#0b0e13] ${
+            isToday ? "ring-2 ring-sky-200/60" : ""
+          }`}
+          style={{
+            width: `${Math.max(12, 28 - ratio * 14)}px`,
+            height: `${Math.max(12, 28 - ratio * 14)}px`,
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [entries, setEntries] = useState<WaterEntry[]>([]);
   const [accessToken, setAccessToken] = useState("");
@@ -265,6 +432,10 @@ export default function Home() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
+  const [snapshotMode, setSnapshotMode] = useState<SnapshotMode>("7-day");
+  const [selectedMonthKey, setSelectedMonthKey] = useState(() =>
+    getEasternMonthKey(new Date()),
+  );
 
   const [settings, setSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
@@ -278,31 +449,47 @@ export default function Home() {
     favoriteDrinks: [],
   });
 
-  const loadDashboardData = useCallback(async (token: string) => {
-    const [entriesResponse, settingsResponse, profileResponse] = await Promise.all([
-      authorizedFetch("/api/water-log?days=7", token),
-      authorizedFetch("/api/tracker-settings", token),
-      authorizedFetch("/api/profile", token),
-    ]);
+  const loadDashboardData = useCallback(
+    async (
+      token: string,
+      options?: {
+        mode?: SnapshotMode;
+        monthKey?: string;
+      },
+    ) => {
+      const mode = options?.mode ?? snapshotMode;
+      const monthKey = options?.monthKey ?? selectedMonthKey;
+      const entriesPath =
+        mode === "monthly"
+          ? `/api/water-log?month=${monthKey}`
+          : "/api/water-log?days=7";
 
-    if (!entriesResponse.ok || !settingsResponse.ok) {
-      throw new Error("Unable to load tracker data.");
-    }
+      const [entriesResponse, settingsResponse, profileResponse] = await Promise.all([
+        authorizedFetch(entriesPath, token),
+        authorizedFetch("/api/tracker-settings", token),
+        authorizedFetch("/api/profile", token),
+      ]);
 
-    const entriesData = await entriesResponse.json();
-    const settingsData = await settingsResponse.json();
-    const loadedSettings = normalizeSettings(settingsData.settings);
+      if (!entriesResponse.ok || !settingsResponse.ok) {
+        throw new Error("Unable to load tracker data.");
+      }
 
-    setEntries(Array.isArray(entriesData.entries) ? entriesData.entries : []);
-    setSettings(loadedSettings);
-    setDraftSettings(loadedSettings);
+      const entriesData = await entriesResponse.json();
+      const settingsData = await settingsResponse.json();
+      const loadedSettings = normalizeSettings(settingsData.settings);
 
-    if (profileResponse.ok) {
-      const profileData = (await profileResponse.json()) as ProfileApiResponse;
-      const profile = profileData.profile;
-      setDisplayName(profile?.display_name?.trim() || profile?.username?.trim() || "");
-    }
-  }, []);
+      setEntries(Array.isArray(entriesData.entries) ? entriesData.entries : []);
+      setSettings(loadedSettings);
+      setDraftSettings(loadedSettings);
+
+      if (profileResponse.ok) {
+        const profileData = (await profileResponse.json()) as ProfileApiResponse;
+        const profile = profileData.profile;
+        setDisplayName(profile?.display_name?.trim() || profile?.username?.trim() || "");
+      }
+    },
+    [selectedMonthKey, snapshotMode],
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -326,7 +513,10 @@ export default function Home() {
 
         setAccessToken(session.access_token);
         setUserId(session.user.id);
-        await loadDashboardData(session.access_token);
+        await loadDashboardData(session.access_token, {
+          mode: snapshotMode,
+          monthKey: selectedMonthKey,
+        });
       } catch (error) {
         console.error("Dashboard initialization failed:", error);
         if (isMounted) {
@@ -352,7 +542,7 @@ export default function Home() {
       isMounted = false;
       if (loadingTimeout) window.clearTimeout(loadingTimeout);
     };
-  }, [loadDashboardData]);
+  }, [loadDashboardData, selectedMonthKey, snapshotMode]);
 
   useEffect(() => {
     if (!userId || !accessToken) return;
@@ -368,7 +558,10 @@ export default function Home() {
           filter: `user_id=eq.${userId}`,
         },
         () => {
-          void loadDashboardData(accessToken);
+          void loadDashboardData(accessToken, {
+            mode: snapshotMode,
+            monthKey: selectedMonthKey,
+          });
         },
       )
       .subscribe((status) => {
@@ -378,16 +571,20 @@ export default function Home() {
     return () => {
       void browserSupabase.removeChannel(channel);
     };
-  }, [accessToken, loadDashboardData, userId]);
+  }, [accessToken, loadDashboardData, selectedMonthKey, snapshotMode, userId]);
 
   const todayEastern = getEasternDateKey(new Date());
+  const todayMonthKey = getEasternMonthKey(new Date());
+
   const todayEntries = entries.filter(
     (entry) => getEasternDateKey(entry.created_at) === todayEastern,
   );
+
   const currentOz = todayEntries.reduce(
     (total, entry) => total + Number(entry.amount_oz),
     0,
   );
+
   const remainingOz = Math.max(Math.round(settings.dailyGoalOz - currentOz), 0);
   const overGoalOz = Math.max(Math.round(currentOz - settings.dailyGoalOz), 0);
   const progressPercent = Math.min(
@@ -395,14 +592,11 @@ export default function Home() {
     100,
   );
 
-  const ouncesByEasternDate = entries.reduce<Record<string, number>>(
-    (totals, entry) => {
-      const entryDateKey = getEasternDateKey(entry.created_at);
-      totals[entryDateKey] = (totals[entryDateKey] ?? 0) + Number(entry.amount_oz);
-      return totals;
-    },
-    {},
-  );
+  const ouncesByEasternDate = entries.reduce<Record<string, number>>((totals, entry) => {
+    const entryDateKey = getEasternDateKey(entry.created_at);
+    totals[entryDateKey] = (totals[entryDateKey] ?? 0) + Number(entry.amount_oz);
+    return totals;
+  }, {});
 
   const todayDate = new Date();
 
@@ -433,15 +627,43 @@ export default function Home() {
     };
   });
 
-  const weeklyTotalOz = weeklyDays.reduce((total, day) => total + day.ounces, 0);
-  const weeklyAverageOz = Math.round(weeklyTotalOz / weeklyDays.length);
-  const daysGoalHit = weeklyDays.filter((day) => day.ounces >= settings.dailyGoalOz).length;
-  const bestDay = weeklyDays.reduce((best, day) => (day.ounces > best.ounces ? day : best), weeklyDays[0]);
-  const currentStreak = calculateCurrentStreak(weeklyDays, settings.dailyGoalOz, todayEastern);
+  const monthlyCalendarDays = useMemo(() => {
+    return getMonthGrid(selectedMonthKey, ouncesByEasternDate, todayEastern);
+  }, [ouncesByEasternDate, selectedMonthKey, todayEastern]);
+
+  const monthlyActiveDays = useMemo(() => {
+    return monthlyCalendarDays.filter((day) => day.isCurrentMonth);
+  }, [monthlyCalendarDays]);
+
+  const snapshotDays = snapshotMode === "monthly" ? monthlyActiveDays : weeklyDays;
+  const snapshotLabel = snapshotMode === "monthly" ? "Monthly snapshot" : "7 day snapshot";
+  const snapshotSubcopy =
+    snapshotMode === "monthly"
+      ? `Calendar view for ${formatMonthLabel(selectedMonthKey)}. Each day fills toward your ${settings.dailyGoalOz} oz goal.`
+      : `Daily intake against your ${settings.dailyGoalOz} oz target over the last 7 days.`;
+
+  const snapshotTotalOz = snapshotDays.reduce((total, day) => total + day.ounces, 0);
+  const snapshotAverageOz = Math.round(
+    snapshotTotalOz / Math.max(snapshotDays.length, 1),
+  );
+  const snapshotGoalHitCount = snapshotDays.filter(
+    (day) => day.ounces >= settings.dailyGoalOz,
+  ).length;
+  const bestDay = snapshotDays.reduce(
+    (best, day) => (day.ounces > best.ounces ? day : best),
+    snapshotDays[0],
+  );
+
+  const currentStreak =
+    snapshotMode === "7-day"
+      ? calculateCurrentStreak(weeklyDays, settings.dailyGoalOz, todayEastern)
+      : 0;
+
   const chartMaximum = Math.max(
     settings.dailyGoalOz,
     ...weeklyDays.map((day) => day.ounces),
   );
+
   const { top: chartTop, ticks: chartTicks } = buildChartTicks(
     Math.ceil(chartMaximum * 1.15),
   );
@@ -458,14 +680,19 @@ export default function Home() {
         : `${remainingOz} oz to go for today.`;
 
   const insightCopy =
-    daysGoalHit === 7
-      ? "Perfect week so far. You have reached your target every day."
-      : weeklyAverageOz >= settings.dailyGoalOz
-        ? `You are averaging ${weeklyAverageOz} oz per day — ${weeklyAverageOz - settings.dailyGoalOz} oz above target.`
-        : `Your 7-day average is ${weeklyAverageOz} oz — ${settings.dailyGoalOz - weeklyAverageOz} oz below target.`;
+    snapshotMode === "monthly"
+      ? snapshotAverageOz >= settings.dailyGoalOz
+        ? `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day — ${snapshotAverageOz - settings.dailyGoalOz} oz above target.`
+        : `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day — ${settings.dailyGoalOz - snapshotAverageOz} oz below target.`
+      : snapshotGoalHitCount === 7
+        ? "Perfect week so far. You have reached your target every day."
+        : snapshotAverageOz >= settings.dailyGoalOz
+          ? `You are averaging ${snapshotAverageOz} oz per day — ${snapshotAverageOz - settings.dailyGoalOz} oz above target.`
+          : `Your 7-day average is ${snapshotAverageOz} oz — ${settings.dailyGoalOz - snapshotAverageOz} oz below target.`;
 
   const manualAmount = Number(manualAmountOz);
-  const trimmedManualDrinkName = (manualDrinkName ?? "").trim();  const canLogManualAmount =
+  const trimmedManualDrinkName = (manualDrinkName ?? "").trim();
+  const canLogManualAmount =
     Number.isFinite(manualAmount) && manualAmount > 0 && manualAmount <= 512;
 
   const favoriteDrinkPresets = useMemo(() => {
@@ -575,6 +802,43 @@ export default function Home() {
       setErrorMessage("Enter an amount between 0.1 and 512 oz.");
       return;
     }
+
+    setIsSavingEntry(true);
+    setErrorMessage("");
+    setStatusMessage("");
+
+    try {
+      const response = await authorizedFetch("/api/water-log", accessToken, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountOz: amountToLog,
+          source: "manual",
+          bottleName,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to save water entry.");
+      }
+
+      setStatusMessage("Hydration logged.");
+      if (override?.clearCustomDrink) {
+        setManualDrinkName("");
+      }
+      await loadDashboardData(accessToken, {
+        mode: snapshotMode,
+        monthKey: selectedMonthKey,
+      });
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not save hydration entry.",
+      );
+    } finally {
+      setIsSavingEntry(false);
+    }
   }
 
   async function favoriteTypedDrink() {
@@ -583,12 +847,15 @@ export default function Home() {
       return;
     }
 
+    const nextFavorite = {
+      key: slugifyDrinkKey(trimmedManualDrinkName, manualAmount),
+      name: trimmedManualDrinkName,
+      amountOz: Number(manualAmount.toFixed(1)),
+    };
+
     await persistFavoriteDrinks([
-      {
-        key: slugifyDrinkKey(trimmedManualDrinkName, manualAmount),
-        name: trimmedManualDrinkName,
-        amountOz: Number(manualAmount.toFixed(1)),
-      },
+      ...settings.favoriteDrinks.filter((drink) => drink.key !== nextFavorite.key),
+      nextFavorite,
     ]);
   }
 
@@ -616,7 +883,10 @@ export default function Home() {
         currentEntries.filter((entry) => entry.id !== entryId),
       );
       setStatusMessage("Entry removed.");
-      await loadDashboardData(accessToken);
+      await loadDashboardData(accessToken, {
+        mode: snapshotMode,
+        monthKey: selectedMonthKey,
+      });
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : "Could not delete this entry.",
@@ -635,23 +905,19 @@ export default function Home() {
     setStatusMessage("");
 
     try {
-      const response = await authorizedFetch(
-        "/api/tracker-settings",
-        accessToken,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            dailyGoalOz: Number(draftSettings.dailyGoalOz),
-            bottleSizeOz: Number(draftSettings.bottleSizeOz),
-            favoriteDrinks: draftSettings.favoriteDrinks.map((drink) => ({
-              key: drink.key,
-              name: drink.name,
-              amountOz: drink.amountOz,
-            })),
-          }),
-        },
-      );
+      const response = await authorizedFetch("/api/tracker-settings", accessToken, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dailyGoalOz: Number(draftSettings.dailyGoalOz),
+          bottleSizeOz: Number(draftSettings.bottleSizeOz),
+          favoriteDrinks: draftSettings.favoriteDrinks.map((drink) => ({
+            key: drink.key,
+            name: drink.name,
+            amountOz: drink.amountOz,
+          })),
+        }),
+      });
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -682,6 +948,37 @@ export default function Home() {
   async function signOut() {
     await browserSupabase.auth.signOut();
     window.location.replace("/login");
+  }
+
+  async function switchSnapshotMode(nextMode: SnapshotMode) {
+    setSnapshotMode(nextMode);
+
+    if (!accessToken) return;
+
+    setErrorMessage("");
+    await loadDashboardData(accessToken, {
+      mode: nextMode,
+      monthKey: selectedMonthKey,
+    });
+  }
+
+  async function jumpMonth(direction: "previous" | "next") {
+    const nextMonthKey =
+      direction === "previous"
+        ? getPreviousMonthKey(selectedMonthKey)
+        : getNextMonthKey(selectedMonthKey);
+
+    if (isFutureMonth(nextMonthKey) || nextMonthKey < earliestHistoryMonth) return;
+
+    setSelectedMonthKey(nextMonthKey);
+
+    if (!accessToken) return;
+
+    setErrorMessage("");
+    await loadDashboardData(accessToken, {
+      mode: "monthly",
+      monthKey: nextMonthKey,
+    });
   }
 
   if (isLoading) {
@@ -777,10 +1074,254 @@ export default function Home() {
           />
         </div>
 
+        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              {snapshotMode === "monthly" ? "Monthly average" : "7-day average"}
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {snapshotAverageOz}
+              <span className="ml-1 text-sm text-slate-500">oz</span>
+            </p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Goal days
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {snapshotGoalHitCount}
+              <span className="text-sm text-slate-500">
+                /{snapshotMode === "monthly" ? snapshotDays.length : 7}
+              </span>
+            </p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              {snapshotMode === "monthly" ? "Monthly total" : "Goal streak"}
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {snapshotMode === "monthly" ? snapshotTotalOz : currentStreak}
+              <span className="ml-1 text-sm text-slate-500">
+                {snapshotMode === "monthly" ? "oz" : "days"}
+              </span>
+            </p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Best day
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-white">
+              {bestDay?.ounces ?? 0}
+              <span className="ml-1 text-sm text-slate-500">oz</span>
+            </p>
+          </div>
+        </section>
+
+        <section className="mt-5 rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">
+                Snapshot
+              </p>
+              <h2 className="mt-2 text-xl font-semibold text-white">{snapshotLabel}</h2>
+              <p className="mt-1 text-sm text-slate-400">{snapshotSubcopy}</p>
+            </div>
+
+            <div className="flex flex-col gap-3 sm:items-end">
+              <div className="inline-flex rounded-lg border border-white/10 bg-[#0b0e13] p-1">
+                <button
+                  type="button"
+                  onClick={() => void switchSnapshotMode("7-day")}
+                  className={`rounded-md px-3 py-2 text-sm font-semibold transition ${
+                    snapshotMode === "7-day"
+                      ? "bg-cyan-300 text-[#071015]"
+                      : "text-slate-300 hover:text-white"
+                  }`}
+                >
+                  7 day
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void switchSnapshotMode("monthly")}
+                  className={`rounded-md px-3 py-2 text-sm font-semibold transition ${
+                    snapshotMode === "monthly"
+                      ? "bg-cyan-300 text-[#071015]"
+                      : "text-slate-300 hover:text-white"
+                  }`}
+                >
+                  Monthly snapshot
+                </button>
+              </div>
+
+              {snapshotMode === "monthly" && (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void jumpMonth("previous")}
+                    disabled={selectedMonthKey <= earliestHistoryMonth}
+                    className="rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    ←
+                  </button>
+                  <div className="min-w-[180px] rounded-lg border border-white/10 px-4 py-2 text-center text-sm font-semibold text-white">
+                    {formatMonthLabel(selectedMonthKey)}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void jumpMonth("next")}
+                    disabled={selectedMonthKey === todayMonthKey}
+                    className="rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    →
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {snapshotMode === "7-day" ? (
+            <div className="mt-6 h-64 sm:h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={weeklyDays} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="hydrationArea" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.38} />
+                      <stop offset="100%" stopColor="#22d3ee" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid vertical={false} stroke="#ffffff" strokeOpacity={0.07} />
+                  <XAxis
+                    dataKey="dateKey"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "#7f8aa0", fontSize: 12 }}
+                    dy={10}
+                    tickFormatter={(value) =>
+                      new Intl.DateTimeFormat("en-US", {
+                        timeZone: "America/New_York",
+                        weekday: "narrow",
+                      }).format(new Date(`${value}T12:00:00`))
+                    }
+                  />
+                  <YAxis
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fill: "#7f8aa0", fontSize: 11 }}
+                    domain={[0, chartTop]}
+                    ticks={chartTicks}
+                    allowDecimals={false}
+                  />
+                  <Tooltip
+                    cursor={{ stroke: "#67e8f9", strokeWidth: 1, strokeOpacity: 0.45 }}
+                    content={<TrendTooltip dailyGoalOz={settings.dailyGoalOz} />}
+                  />
+                  <ReferenceLine
+                    y={settings.dailyGoalOz}
+                    stroke="#fbbf24"
+                    strokeDasharray="5 5"
+                    strokeOpacity={0.85}
+                    label={{
+                      value: "Goal",
+                      fill: "#fcd34d",
+                      fontSize: 11,
+                      position: "insideTopRight",
+                    }}
+                  />
+                  <Area
+                    type="linear"
+                    dataKey="ounces"
+                    stroke="#22d3ee"
+                    strokeWidth={3}
+                    fill="url(#hydrationArea)"
+                    activeDot={{ r: 5, fill: "#ffffff", stroke: "#22d3ee", strokeWidth: 3 }}
+                    dot={<CustomDot />}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="mt-6">
+              <div className="grid grid-cols-7 gap-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
+                  <div key={label} className="py-1">
+                    {label}
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-2 grid grid-cols-7 gap-2">
+                {monthlyCalendarDays.map((day) => (
+                  <div
+                    key={day.dateKey}
+                    className={`min-h-[84px] rounded-xl border p-2 ${
+                      day.isCurrentMonth
+                        ? day.isToday
+                          ? "border-cyan-300/40 bg-cyan-/[0.05]"
+                          : "border-white/10 white/10"
+                        : "border-transparent bg-transparent"
+                    }`}
+                  >
+                    {day.isCurrentMonth && (
+                      <div className="flex h-full flex-col">
+                        <div className="flex items-start justify-between">
+                          <span
+                            className={`text-xs font-semibold ${
+                              day.isToday ? "text-cyan-200" : "text-slate-400"
+                            }`}
+                          >
+                            {day.dayNumber}
+                          </span>
+                          {day.ounces > 0 && (
+                            <span className="text-[10px] font-medium text-slate-500">
+                              {formatOunces(day.ounces)} oz
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-3 flex flex-1 items-center justify-center">
+                          <DayProgressDonut
+                            ounces={day.ounces}
+                            goalOz={settings.dailyGoalOz}
+                            isToday={day.isToday}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-slate-400">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-3 w-3 rounded-full bg-sky-300" />
+                  <span>Partial progress</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-3 w-3 rounded-full bg-emerald-400" />
+                  <span>Goal reached</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-3 w-3 rounded-full border border-white/20 bg-transparent" />
+                  <span>No log</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="mt-5 rounded-xl border border-amber-300/15 bg-amber-300/[0.05] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-200/80">
+            Hydration insight
+          </p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">{insightCopy}</p>
+        </section>
+
         <section className="mt-5 rounded-2xl border border-cyan-300/15 bg-[#111720] p-5 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">Manual log</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">
+                Manual log
+              </p>
               <h2 className="mt-2 text-xl font-semibold text-white">Add hydration</h2>
               <p className="mt-1 text-sm text-slate-400">
                 Log any amount when you finish a bottle, cup, or refill.
@@ -822,7 +1363,8 @@ export default function Home() {
                 );
               }
 
-              const isSelected = Number(manualAmountOz) === item.amountOz && !trimmedManualDrinkName;
+              const isSelected =
+                Number(manualAmountOz) === item.amountOz && !trimmedManualDrinkName;
 
               return (
                 <button
@@ -870,7 +1412,9 @@ export default function Home() {
                 className="w-full rounded-lg border border-white/10 bg-[#0b0e13] px-4 py-3 pr-12 text-lg font-semibold text-white outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
                 aria-label="Custom ounces"
               />
-              <span className="pointer-events-none absolute right-4 top-3.5 text-sm font-medium text-slate-500">oz</span>
+              <span className="pointer-events-none absolute right-4 top-3.5 text-sm font-medium text-slate-500">
+                oz
+              </span>
             </label>
 
             <button
@@ -964,123 +1508,21 @@ export default function Home() {
               </div>
 
               <p className="mt-3 text-xs text-slate-500">
-                Favorite one drink to pin it above with your core quick-add buttons. These logs do not change your water target yet.
+                Favorite one drink to pin it above with your core quick-add buttons. These logs do
+                not change your water target yet.
               </p>
             </div>
           )}
         </section>
 
-        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">7-day average</p>
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {weeklyAverageOz}
-              <span className="ml-1 text-sm text-slate-500">oz</span>
-            </p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Goal days</p>
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {daysGoalHit}
-              <span className="text-sm text-slate-500">/7</span>
-            </p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Goal streak</p>
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {currentStreak}
-              <span className="ml-1 text-sm text-slate-500">days</span>
-            </p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Best day</p>
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {bestDay.ounces}
-              <span className="ml-1 text-sm text-slate-500">oz</span>
-            </p>
-          </div>
-        </section>
-
-        <section className="mt-5 rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">Trend view</p>
-              <h2 className="mt-2 text-xl font-semibold text-white">Weekly hydration</h2>
-              <p className="mt-1 text-sm text-slate-400">
-                Daily intake against your {settings.dailyGoalOz} oz target.
-              </p>
-            </div>
-            <div className="rounded-md border border-white/10 px-3 py-2 text-right">
-              <p className="text-xs text-slate-500">Weekly total</p>
-              <p className="text-sm font-semibold text-white">{weeklyTotalOz} oz</p>
-            </div>
-          </div>
-
-          <div className="mt-6 h-64 sm:h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={weeklyDays} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="hydrationArea" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.38} />
-                    <stop offset="100%" stopColor="#22d3ee" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid vertical={false} stroke="#ffffff" strokeOpacity={0.07} />
-                <XAxis
-                  dataKey="dateKey"
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{ fill: "#7f8aa0", fontSize: 12 }}
-                  dy={10}
-                  tickFormatter={(value) =>
-                    new Intl.DateTimeFormat("en-US", {
-                      timeZone: "America/New_York",
-                      weekday: "narrow",
-                    }).format(new Date(`${value}T12:00:00`))
-                  }
-                />
-                <YAxis
-                  axisLine={false}
-                  tickLine={false}
-                  tick={{ fill: "#7f8aa0", fontSize: 11 }}
-                  domain={[0, chartTop]}
-                  ticks={chartTicks}
-                  allowDecimals={false}
-                />
-                <Tooltip
-                  cursor={{ stroke: "#67e8f9", strokeWidth: 1, strokeOpacity: 0.45 }}
-                  content={<TrendTooltip dailyGoalOz={settings.dailyGoalOz} />}
-                />
-                <ReferenceLine
-                  y={settings.dailyGoalOz}
-                  stroke="#fbbf24"
-                  strokeDasharray="5 5"
-                  strokeOpacity={0.85}
-                  label={{ value: "Goal", fill: "#fcd34d", fontSize: 11, position: "insideTopRight" }}
-                />
-                <Area
-                  type="linear"
-                  dataKey="ounces"
-                  stroke="#22d3ee"
-                  strokeWidth={3}
-                  fill="url(#hydrationArea)"
-                  activeDot={{ r: 5, fill: "#ffffff", stroke: "#22d3ee", strokeWidth: 3 }}
-                  dot={<CustomDot />}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </section>
-
-        <section className="mt-5 rounded-xl border border-amber-300/15 bg-amber-300/[0.05] p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-200/80">Hydration insight</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{insightCopy}</p>
-        </section>
+        
 
         <section className="mt-5 rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Tracker settings</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                Tracker settings
+              </p>
               <p className="mt-2 text-sm text-slate-300">
                 {settings.bottleSizeOz} oz bottle · {settings.dailyGoalOz} oz daily goal
               </p>
@@ -1138,7 +1580,8 @@ export default function Home() {
               <div className="rounded-xl border border-white/10 bg-[#0b0e13] p-4">
                 <p className="text-sm font-medium text-white">Favorite quick adds</p>
                 <p className="mt-1 text-sm text-slate-400">
-                  Favorite drinks from the dashboard quick select area. They stay pinned across future sessions until removed.
+                  Favorite drinks from the dashboard quick select area. They stay pinned across
+                  future sessions until removed.
                 </p>
 
                 {draftSettings.favoriteDrinks.length > 0 ? (
@@ -1209,7 +1652,9 @@ export default function Home() {
         <section className="mt-8 pb-8">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Recent activity</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                Recent activity
+              </p>
               <h2 className="mt-1 text-xl font-semibold text-white">Today&apos;s log</h2>
             </div>
             <span className="text-sm text-slate-500">{todayEntries.length} entries</span>
@@ -1238,7 +1683,7 @@ export default function Home() {
                   </p>
                 </div>
 
-                <div className="flex items-center gap-3 shrink-0">
+                <div className="flex shrink-0 items-center gap-3">
                   <span
                     className={`rounded-full px-3 py-1 text-xs font-semibold ${
                       entry.source === "nfc"

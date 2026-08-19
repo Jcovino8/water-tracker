@@ -142,6 +142,39 @@ function getEasternDateKeys(days: number) {
   return new Set(keys);
 }
 
+function parseMonthParam(monthParam: string | null) {
+  if (!monthParam) return null;
+
+  const match = /^(\d{4})-(\d{2})$/.exec(monthParam);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(monthIndex) ||
+    monthIndex < 0 ||
+    monthIndex > 11
+  ) {
+    return null;
+  }
+
+  return { year, monthIndex };
+}
+
+function getEasternMonthDateKeys(year: number, monthIndex: number) {
+  const keys: string[] = [];
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+
+  for (let dayNumber = 1; dayNumber <= daysInMonth; dayNumber += 1) {
+    const date = new Date(year, monthIndex, dayNumber, 12, 0, 0);
+    keys.push(getEasternDateKey(date));
+  }
+
+  return new Set(keys);
+}
+
 export async function GET(request: Request) {
   const ownerUser = await getOwnerUser(request);
 
@@ -150,17 +183,43 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
-  const daysParam = searchParams.get("days") ?? "1";
-  const days = Number(daysParam);
+  const monthParam = searchParams.get("month");
 
-  if (!Number.isInteger(days) || days < 1 || days > 30) {
-    return NextResponse.json(
-      { error: "days must be a whole number between 1 and 30." },
-      { status: 400 },
+  let dateKeys: Set<string>;
+  let mode: "days" | "month";
+  let days: number | null = null;
+  let month: string | null = null;
+
+  if (monthParam) {
+    const parsedMonth = parseMonthParam(monthParam);
+
+    if (!parsedMonth) {
+      return NextResponse.json(
+        { error: 'month must be in "YYYY-MM" format.' },
+        { status: 400 },
+      );
+    }
+
+    dateKeys = getEasternMonthDateKeys(
+      parsedMonth.year,
+      parsedMonth.monthIndex,
     );
-  }
+    mode = "month";
+    month = monthParam;
+  } else {
+    const daysParam = searchParams.get("days") ?? "1";
+    days = Number(daysParam);
 
-  const easternDateKeys = getEasternDateKeys(days);
+    if (!Number.isInteger(days) || days < 1 || days > 90) {
+      return NextResponse.json(
+        { error: "days must be a whole number between 1 and 90." },
+        { status: 400 },
+      );
+    }
+
+    dateKeys = getEasternDateKeys(days);
+    mode = "days";
+  }
 
   const { data, error } = await supabase
     .from("water_entries")
@@ -178,11 +237,13 @@ export async function GET(request: Request) {
   }
 
   const entries = data.filter((entry) =>
-    easternDateKeys.has(getEasternDateKey(entry.created_at)),
+    dateKeys.has(getEasternDateKey(entry.created_at)),
   );
 
   return NextResponse.json({
+    mode,
     days,
+    month,
     entries,
   });
 }

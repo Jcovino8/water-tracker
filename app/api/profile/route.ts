@@ -83,9 +83,7 @@ export async function GET(request: NextRequest) {
         .order("created_at", { ascending: true }),
       supabase
         .from("tracker_settings")
-        .select(
-          "daily_goal_oz, bottle_size_oz, favorite_drink_key, favorite_drink_name, favorite_drink_oz, updated_at",
-        )
+        .select("daily_goal_oz, bottle_size_oz, favorite_drinks, updated_at")
         .eq("id", user.id)
         .maybeSingle(),
     ]);
@@ -126,9 +124,7 @@ export async function GET(request: NextRequest) {
       settings: settingsResult.data ?? {
         daily_goal_oz: 128,
         bottle_size_oz: 25,
-        favorite_drink_key: null,
-        favorite_drink_name: null,
-        favorite_drink_oz: null,
+        favorite_drinks: [],
         updated_at: null,
       },
     });

@@ -39,20 +39,26 @@ export default function LoginPage() {
   useEffect(() => {
     let isMounted = true;
 
-    async function checkSession() {
-      const {
-        data: { session },
-      } = await browserSupabase.auth.getSession();
+    const {
+      data: { subscription },
+    } = browserSupabase.auth.onAuthStateChange((event, session) => {
+      if (!isMounted || !session) {
+        return;
+      }
 
-      if (isMounted && session) {
+      if (event === "PASSWORD_RECOVERY") {
+        window.location.replace("/reset-password");
+        return;
+      }
+
+      if (event === "SIGNED_IN") {
         window.location.replace("/");
       }
-    }
-
-    void checkSession();
+    });
 
     return () => {
       isMounted = false;
+      subscription.unsubscribe();
     };
   }, []);
 
