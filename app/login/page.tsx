@@ -185,19 +185,6 @@ export default function LoginPage() {
       <div className="grid min-h-screen lg:grid-cols-[1.05fr_0.95fr]">
         <section className="relative hidden overflow-hidden border-r border-white/5 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_30%),linear-gradient(180deg,#0f1722_0%,#0b0e13_58%,#0a0d12_100%)] px-10 py-12 lg:flex lg:flex-col">
           <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(255,255,255,0.03),transparent_22%,transparent_78%,rgba(255,255,255,0.02))]" />
-          <div className="relative z-10 flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-300/10 shadow-[0_0_30px_rgba(34,211,238,0.14)]">
-              <span className="h-2.5 w-2.5 rounded-full bg-cyan-300" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-300/90">
-                Water Tracker
-              </p>
-              <p className="mt-1 text-sm text-slate-400">
-                Personal hydration, designed like a real product.
-              </p>
-            </div>
-          </div>
 
           <div className="relative z-10 mt-20 max-w-xl">
             <p className="mt-5 text-5xl font-semibold tracking-[-0.05em] text-cyan-300/80">
@@ -206,7 +193,6 @@ export default function LoginPage() {
             <h1 className="text-sm font-medium uppercase tracking-[0.18em]className= text-white">
               Sip. Tap. Track.
             </h1>
-  
           </div>
 
           <div className="relative z-10 mt-auto grid gap-4">
@@ -275,36 +261,7 @@ export default function LoginPage() {
                 >
                   Sign up
                 </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setMessage("");
-                    setErrorMessage("");
-
-                    const email = loginEmail.trim();
-
-                    if (!email) {
-                      setErrorMessage("Enter your email first, then request a password reset.");
-                      return;
-                    }
-
-                    const { error } = await browserSupabase.auth.resetPasswordForEmail(email, {
-                      redirectTo: `${window.location.origin}/auth/callback?next=/reset-password`,
-                    });
-
-                    if (error) {
-                      setErrorMessage(error.message);
-                      return;
-                    }
-
-                    setMessage("Password reset link sent. Check your email.");
-                  }}
-                  className="mt-1 text-sm font-medium text-cyan-300 transition hover:text-cyan-200"
-                >
-                  Forgot password?
-                </button>
               </div>
-
 
               {mode === "login" ? (
                 <div>
@@ -343,6 +300,37 @@ export default function LoginPage() {
                         className="mt-2 w-full rounded-xl border border-white/10 bg-[#0b0e13] px-4 py-3 text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
                       />
                     </label>
+
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setMessage("");
+                          setErrorMessage("");
+
+                          const email = loginEmail.trim();
+
+                          if (!email) {
+                            setErrorMessage("Enter your email first, then request a password reset.");
+                            return;
+                          }
+
+                          const { error } = await browserSupabase.auth.resetPasswordForEmail(email, {
+                            redirectTo: `${window.location.origin}/auth/callback?next=/reset-password`,
+                          });
+
+                          if (error) {
+                            setErrorMessage(error.message);
+                            return;
+                          }
+
+                          setMessage("Password reset link sent. Check your email.");
+                        }}
+                        className="text-sm font-medium text-cyan-300 transition hover:text-cyan-200"
+                      >
+                        Forgot password?
+                      </button>
+                    </div>
 
                     <button
                       type="submit"
