@@ -10,7 +10,13 @@ type FavoriteDrinkRequest = {
 type TrackerSettingsRequest = {
   dailyGoalOz?: unknown;
   bottleSizeOz?: unknown;
-  favoriteDrink?: FavoriteDrinkRequest | null;
+  favoriteDrinks?: unknown;
+};
+
+type NormalizedFavoriteDrink = {
+  key: string;
+  name: string;
+  amountOz: number;
 };
 
 function unauthorizedResponse() {
@@ -41,15 +47,7 @@ async function getAuthenticatedUser(request: Request) {
   return user;
 }
 
-function normalizeFavoriteDrink(input: FavoriteDrinkRequest | null | undefined) {
-  if (!input) {
-    return {
-      favorite_drink_key: null,
-      favorite_drink_name: null,
-      favorite_drink_oz: null,
-    };
-  }
-
+function normalizeFavoriteDrink(input: FavoriteDrinkRequest): NormalizedFavoriteDrink {
   const key =
     typeof input.key === "string" && input.key.trim().length > 0
       ? input.key.trim().slice(0, 64)
@@ -64,15 +62,37 @@ function normalizeFavoriteDrink(input: FavoriteDrinkRequest | null | undefined) 
 
   if (!key || !name || !Number.isFinite(amountOz) || amountOz <= 0 || amountOz > 128) {
     throw new Error(
-      "favoriteDrink must include a valid key, name, and amountOz between 0.1 and 128.",
+      "Each favorite drink must include a valid key, name, and amountOz between 0.1 and 128.",
     );
   }
 
   return {
-    favorite_drink_key: key,
-    favorite_drink_name: name,
-    favorite_drink_oz: Number(amountOz.toFixed(1)),
+    key,
+    name,
+    amountOz: Number(amountOz.toFixed(1)),
   };
+}
+
+function normalizeFavoriteDrinks(input: unknown): NormalizedFavoriteDrink[] {
+  if (input == null) {
+    return [];
+  }
+
+  if (!Array.isArray(input)) {
+    throw new Error("favoriteDrinks must be an array.");
+  }
+
+  const normalized = input.map((item) =>
+    normalizeFavoriteDrink((item ?? {}) as FavoriteDrinkRequest),
+  );
+
+  const deduped = new Map<string, NormalizedFavoriteDrink>();
+
+  for (const drink of normalized) {
+    deduped.set(drink.key, drink);
+  }
+
+  return Array.from(deduped.values()).slice(0, 24);
 }
 
 export async function GET(request: Request) {
@@ -84,9 +104,7 @@ export async function GET(request: Request) {
 
   const { data, error } = await supabase
     .from("tracker_settings")
-    .select(
-      "daily_goal_oz, bottle_size_oz, favorite_drink_key, favorite_drink_name, favorite_drink_oz, updated_at",
-    )
+    .select("daily_goal_oz, bottle_size_oz, favorite_drinks, updated_at")
     .eq("id", user.id)
     .maybeSingle();
 
@@ -106,13 +124,9 @@ export async function GET(request: Request) {
         id: user.id,
         daily_goal_oz: 128,
         bottle_size_oz: 25,
-        favorite_drink_key: null,
-        favorite_drink_name: null,
-        favorite_drink_oz: null,
+        favorite_drinks: [],
       })
-      .select(
-        "daily_goal_oz, bottle_size_oz, favorite_drink_key, favorite_drink_name, favorite_drink_oz, updated_at",
-      )
+      .select("daily_goal_oz, bottle_size_oz, favorite_drinks, updated_at")
       .single();
 
     if (insertError) {
@@ -127,7 +141,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ settings: insertedSettings });
   }
 
-  return NextResponse.json({ settings: data });
+  return NextResponse.json({
+    settings: {
+      ...data,
+      favorite_drinks: Array.isArray(data.favorite_drinks) ? data.favorite_drinks : [],
+    },
+  });
 }
 
 export async function PATCH(request: Request) {
@@ -151,43 +170,29 @@ export async function PATCH(request: Request) {
   const dailyGoalOz = Number(body.dailyGoalOz);
   const bottleSizeOz = Number(body.bottleSizeOz);
 
-  if (
-    !Number.isInteger(dailyGoalOz) ||
-    dailyGoalOz < 16 ||
-    dailyGoalOz > 512
-  ) {
+  if (!Number.isInteger(dailyGoalOz) || dailyGoalOz < 16 || dailyGoalOz > 512) {
     return NextResponse.json(
       { error: "dailyGoalOz must be a whole number between 16 and 512." },
       { status: 400 },
     );
   }
 
-  if (
-    !Number.isInteger(bottleSizeOz) ||
-    bottleSizeOz < 4 ||
-    bottleSizeOz > 128
-  ) {
+  if (!Number.isInteger(bottleSizeOz) || bottleSizeOz < 4 || bottleSizeOz > 128) {
     return NextResponse.json(
       { error: "bottleSizeOz must be a whole number between 4 and 128." },
       { status: 400 },
     );
   }
 
-  let favoriteDrinkColumns: {
-    favorite_drink_key: string | null;
-    favorite_drink_name: string | null;
-    favorite_drink_oz: number | null;
-  };
+  let favoriteDrinks: NormalizedFavoriteDrink[];
 
   try {
-    favoriteDrinkColumns = normalizeFavoriteDrink(body.favoriteDrink);
+    favoriteDrinks = normalizeFavoriteDrinks(body.favoriteDrinks);
   } catch (error) {
     return NextResponse.json(
       {
         error:
-          error instanceof Error
-            ? error.message
-            : "favoriteDrink is invalid.",
+          error instanceof Error ? error.message : "favoriteDrinks is invalid.",
       },
       { status: 400 },
     );
@@ -199,12 +204,10 @@ export async function PATCH(request: Request) {
       id: user.id,
       daily_goal_oz: dailyGoalOz,
       bottle_size_oz: bottleSizeOz,
-      ...favoriteDrinkColumns,
+      favorite_drinks: favoriteDrinks,
       updated_at: new Date().toISOString(),
     })
-    .select(
-      "daily_goal_oz, bottle_size_oz, favorite_drink_key, favorite_drink_name, favorite_drink_oz, updated_at",
-    )
+    .select("daily_goal_oz, bottle_size_oz, favorite_drinks, updated_at")
     .single();
 
   if (error) {

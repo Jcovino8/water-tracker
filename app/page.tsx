@@ -44,15 +44,13 @@ type FavoriteDrink = {
 type TrackerSettings = {
   dailyGoalOz: number;
   bottleSizeOz: number;
-  favoriteDrink: FavoriteDrink | null;
+  favoriteDrinks: FavoriteDrink[];
 };
 
 type TrackerSettingsApiResponse = {
   daily_goal_oz: number;
   bottle_size_oz: number;
-  favorite_drink_key?: string | null;
-  favorite_drink_name?: string | null;
-  favorite_drink_oz?: number | null;
+  favorite_drinks?: FavoriteDrink[] | null;
   updated_at: string;
 };
 
@@ -106,21 +104,26 @@ function getEasternDateKey(value: string | Date) {
 }
 
 function normalizeSettings(settings: TrackerSettingsApiResponse): TrackerSettings {
-  const favoriteDrink =
-    settings.favorite_drink_key &&
-    settings.favorite_drink_name &&
-    settings.favorite_drink_oz
-      ? {
-          key: String(settings.favorite_drink_key),
-          name: String(settings.favorite_drink_name),
-          amountOz: Number(settings.favorite_drink_oz),
-        }
-      : null;
+  const favoriteDrinks = Array.isArray(settings.favorite_drinks)
+    ? settings.favorite_drinks
+        .map((drink) => ({
+          key: String(drink.key),
+          name: String(drink.name),
+          amountOz: Number(drink.amountOz),
+        }))
+        .filter(
+          (drink) =>
+            drink.key.trim().length > 0 &&
+            drink.name.trim().length > 0 &&
+            Number.isFinite(drink.amountOz) &&
+            drink.amountOz > 0,
+        )
+    : [];
 
   return {
     dailyGoalOz: Number(settings.daily_goal_oz),
     bottleSizeOz: Number(settings.bottle_size_oz),
-    favoriteDrink,
+    favoriteDrinks,
   };
 }
 
@@ -266,13 +269,13 @@ export default function Home() {
   const [settings, setSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
-    favoriteDrink: null,
+    favoriteDrinks: [],
   });
 
   const [draftSettings, setDraftSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
-    favoriteDrink: null,
+    favoriteDrinks: [],
   });
 
   const loadDashboardData = useCallback(async (token: string) => {
@@ -465,20 +468,16 @@ export default function Home() {
   const trimmedManualDrinkName = (manualDrinkName ?? "").trim();  const canLogManualAmount =
     Number.isFinite(manualAmount) && manualAmount > 0 && manualAmount <= 512;
 
-  const favoriteDrinkPreset = useMemo(() => {
-    if (!settings.favoriteDrink) return null;
-
-    return {
-      key: settings.favoriteDrink.key,
-      name: settings.favoriteDrink.name,
-      amountOz: settings.favoriteDrink.amountOz,
-    };
-  }, [settings.favoriteDrink]);
+  const favoriteDrinkPresets = useMemo(() => {
+    return settings.favoriteDrinks.map((drink) => ({
+      key: drink.key,
+      name: drink.name,
+      amountOz: drink.amountOz,
+    }));
+  }, [settings.favoriteDrinks]);
 
   const quickLogSizes = useMemo(() => {
-    const sizeButtons = Array.from(
-      new Set([...commonBottleSizes, settings.bottleSizeOz]),
-    )
+    const sizeButtons = Array.from(new Set([...commonBottleSizes, settings.bottleSizeOz]))
       .sort((a, b) => a - b)
       .map((size) => ({
         type: "size" as const,
@@ -487,29 +486,24 @@ export default function Home() {
         amountOz: size,
       }));
 
-    if (!favoriteDrinkPreset) {
-      return sizeButtons;
-    }
+    const favoriteButtons = favoriteDrinkPresets.map((drink) => ({
+      type: "favorite-drink" as const,
+      key: `favorite-${drink.key}`,
+      label: `${drink.name} · ${formatOunces(drink.amountOz)} oz`,
+      amountOz: drink.amountOz,
+      drinkName: drink.name,
+      drinkKey: drink.key,
+    }));
 
-    return [
-      ...sizeButtons,
-      {
-        type: "favorite-drink" as const,
-        key: `favorite-${favoriteDrinkPreset.key}`,
-        label: `${favoriteDrinkPreset.name} · ${formatOunces(favoriteDrinkPreset.amountOz)} oz`,
-        amountOz: favoriteDrinkPreset.amountOz,
-        drinkName: favoriteDrinkPreset.name,
-      },
-    ];
-  }, [favoriteDrinkPreset, settings.bottleSizeOz]);
+    return [...sizeButtons, ...favoriteButtons];
+  }, [favoriteDrinkPresets, settings.bottleSizeOz]);
 
   const collapsibleQuickDrinks = useMemo(() => {
-    return quickDrinkPresets.filter(
-      (drink) => drink.key !== settings.favoriteDrink?.key,
-    );
-  }, [settings.favoriteDrink]);
+    const favoriteKeys = new Set(settings.favoriteDrinks.map((drink) => drink.key));
+    return quickDrinkPresets.filter((drink) => !favoriteKeys.has(drink.key));
+  }, [settings.favoriteDrinks]);
 
-  async function persistFavoriteDrink(nextFavoriteDrink: FavoriteDrink | null) {
+  async function persistFavoriteDrinks(nextFavoriteDrinks: FavoriteDrink[]) {
     if (!accessToken) return;
 
     setIsSavingFavorite(true);
@@ -517,29 +511,23 @@ export default function Home() {
     setStatusMessage("");
 
     try {
-      const response = await authorizedFetch(
-        "/api/tracker-settings",
-        accessToken,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            dailyGoalOz: Number(settings.dailyGoalOz),
-            bottleSizeOz: Number(settings.bottleSizeOz),
-            favoriteDrink: nextFavoriteDrink
-              ? {
-                  key: nextFavoriteDrink.key,
-                  name: nextFavoriteDrink.name,
-                  amountOz: nextFavoriteDrink.amountOz,
-                }
-              : null,
-          }),
-        },
-      );
+      const response = await authorizedFetch("/api/tracker-settings", accessToken, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dailyGoalOz: Number(settings.dailyGoalOz),
+          bottleSizeOz: Number(settings.bottleSizeOz),
+          favoriteDrinks: nextFavoriteDrinks.map((drink) => ({
+            key: drink.key,
+            name: drink.name,
+            amountOz: drink.amountOz,
+          })),
+        }),
+      });
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || "Unable to save favorite drink.");
+        throw new Error(errorData.error || "Unable to save favorite drinks.");
       }
 
       const data = await response.json();
@@ -547,64 +535,45 @@ export default function Home() {
       setSettings(updatedSettings);
       setDraftSettings(updatedSettings);
       setStatusMessage(
-        nextFavoriteDrink
-          ? `${nextFavoriteDrink.name} pinned to quick add.`
+        nextFavoriteDrinks.length > settings.favoriteDrinks.length
+          ? "Drink added to favorites."
           : "Favorite drink removed.",
       );
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : "Could not save favorite drink.",
+        error instanceof Error ? error.message : "Could not save favorite drinks.",
       );
     } finally {
       setIsSavingFavorite(false);
     }
   }
 
+  async function removeFavoriteDrink(drinkKey: string) {
+    await persistFavoriteDrinks(
+      settings.favoriteDrinks.filter((drink) => drink.key !== drinkKey),
+    );
+  }
+
   async function logManualBottle(
-    override?: { amountOz: number; bottleName: string; clearCustomDrink?: boolean },
+    override?: {
+      amountOz?: number;
+      bottleName?: string;
+      clearCustomDrink?: boolean;
+    },
   ) {
     const amountToLog = override?.amountOz ?? manualAmount;
     const bottleName =
       override?.bottleName ??
       (trimmedManualDrinkName.length > 0 ? trimmedManualDrinkName : "Manual entry");
 
-    if (!accessToken || !Number.isFinite(amountToLog) || amountToLog <= 0 || amountToLog > 512) {
+    if (
+      !accessToken ||
+      !Number.isFinite(amountToLog) ||
+      amountToLog <= 0 ||
+      amountToLog > 512
+    ) {
       setErrorMessage("Enter an amount between 0.1 and 512 oz.");
       return;
-    }
-
-    setIsSavingEntry(true);
-    setErrorMessage("");
-    setStatusMessage("");
-
-    try {
-      const response = await authorizedFetch("/api/water-log", accessToken, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amountOz: amountToLog,
-          source: "manual",
-          bottleName,
-        }),
-      });
-
-      if (!response.ok) throw new Error("Unable to save water entry.");
-
-      const data = await response.json();
-      if (data.duplicate) {
-        setStatusMessage("Duplicate log ignored.");
-      } else {
-        setEntries((currentEntries) => [data.entry, ...currentEntries]);
-        setStatusMessage(`Logged ${formatOunces(amountToLog)} oz from ${bottleName}.`);
-        if (override?.clearCustomDrink) {
-          setManualDrinkName("");
-        }
-        await loadDashboardData(accessToken);
-      }
-    } catch {
-      setErrorMessage("Could not save this entry. Please try again.");
-    } finally {
-      setIsSavingEntry(false);
     }
   }
 
@@ -614,11 +583,13 @@ export default function Home() {
       return;
     }
 
-    await persistFavoriteDrink({
-      key: slugifyDrinkKey(trimmedManualDrinkName, manualAmount),
-      name: trimmedManualDrinkName,
-      amountOz: Number(manualAmount.toFixed(1)),
-    });
+    await persistFavoriteDrinks([
+      {
+        key: slugifyDrinkKey(trimmedManualDrinkName, manualAmount),
+        name: trimmedManualDrinkName,
+        amountOz: Number(manualAmount.toFixed(1)),
+      },
+    ]);
   }
 
   async function deleteEntry(entryId: string) {
@@ -673,13 +644,11 @@ export default function Home() {
           body: JSON.stringify({
             dailyGoalOz: Number(draftSettings.dailyGoalOz),
             bottleSizeOz: Number(draftSettings.bottleSizeOz),
-            favoriteDrink: draftSettings.favoriteDrink
-              ? {
-                  key: draftSettings.favoriteDrink.key,
-                  name: draftSettings.favoriteDrink.name,
-                  amountOz: draftSettings.favoriteDrink.amountOz,
-                }
-              : null,
+            favoriteDrinks: draftSettings.favoriteDrinks.map((drink) => ({
+              key: drink.key,
+              name: drink.name,
+              amountOz: drink.amountOz,
+            })),
           }),
         },
       );
@@ -842,7 +811,7 @@ export default function Home() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => void persistFavoriteDrink(null)}
+                      onClick={() => void removeFavoriteDrink(item.drinkKey)}
                       disabled={isSavingFavorite || !accessToken}
                       className="border-l border-cyan-300/20 px-2.5 py-2 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-300/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
                       aria-label={`Remove favorite ${item.drinkName}`}
@@ -975,11 +944,14 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={() =>
-                        void persistFavoriteDrink({
-                          key: drink.key,
-                          name: drink.name,
-                          amountOz: drink.amountOz,
-                        })
+                        void persistFavoriteDrinks([
+                          ...settings.favoriteDrinks.filter((favorite) => favorite.key !== drink.key),
+                          {
+                            key: drink.key,
+                            name: drink.name,
+                            amountOz: drink.amountOz,
+                          },
+                        ])
                       }
                       disabled={isSavingFavorite || !accessToken}
                       aria-label={`Favorite ${drink.name}`}
@@ -1164,30 +1136,40 @@ export default function Home() {
               </div>
 
               <div className="rounded-xl border border-white/10 bg-[#0b0e13] p-4">
-                <p className="text-sm font-medium text-white">Favorite quick add</p>
+                <p className="text-sm font-medium text-white">Favorite quick adds</p>
                 <p className="mt-1 text-sm text-slate-400">
-                  Favorite a drink from the dashboard quick select area. It will stay pinned with your bottle-size buttons.
+                  Favorite drinks from the dashboard quick select area. They stay pinned across future sessions until removed.
                 </p>
-                {draftSettings.favoriteDrink ? (
-                  <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2">
-                    <p className="text-sm text-slate-200">
-                      {draftSettings.favoriteDrink.name} · {formatOunces(draftSettings.favoriteDrink.amountOz)} oz
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setDraftSettings((currentSettings) => ({
-                          ...currentSettings,
-                          favoriteDrink: null,
-                        }))
-                      }
-                      className="rounded-md border border-white/10 px-2.5 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-white/20 hover:text-white"
-                    >
-                      Clear
-                    </button>
+
+                {draftSettings.favoriteDrinks.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {draftSettings.favoriteDrinks.map((drink) => (
+                      <div
+                        key={drink.key}
+                        className="flex items-center gap-2 rounded-lg border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2"
+                      >
+                        <p className="text-sm text-slate-200">
+                          {drink.name} · {formatOunces(drink.amountOz)} oz
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDraftSettings((currentSettings) => ({
+                              ...currentSettings,
+                              favoriteDrinks: currentSettings.favoriteDrinks.filter(
+                                (favorite) => favorite.key !== drink.key,
+                              ),
+                            }))
+                          }
+                          className="rounded-md border border-white/10 px-2 py-1 text-xs font-semibold text-slate-300 transition hover:border-white/20 hover:text-white"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 ) : (
-                  <p className="mt-3 text-sm text-slate-500">No favorite drink selected yet.</p>
+                  <p className="mt-3 text-sm text-slate-500">No favorite drinks selected yet.</p>
                 )}
               </div>
 
