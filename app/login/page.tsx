@@ -200,10 +200,10 @@ export default function LoginPage() {
           </div>
 
           <div className="relative z-10 mt-20 max-w-xl">
-            <p className="text-sm font-medium uppercase tracking-[0.18em] text-cyan-300/80">
+            <p className="mt-5 text-5xl font-semibold tracking-[-0.05em] text-cyan-300/80">
               Welcome to Tally
             </p>
-            <h1 className="mt-5 text-5xl font-semibold tracking-[-0.05em] text-white">
+            <h1 className="text-sm font-medium uppercase tracking-[0.18em]className= text-white">
               Sip. Tap. Track.
             </h1>
   
