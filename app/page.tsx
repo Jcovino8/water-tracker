@@ -700,7 +700,7 @@ export default function Home() {
             <div className="flex items-center gap-2">
               <span className="h-2 w-2 rounded-full bg-cyan-400 shadow-[0_0_14px_rgba(34,211,238,0.9)]" />
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">
-                Hydration performance
+                Tally
               </p>
             </div>
             <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">

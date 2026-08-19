@@ -201,31 +201,28 @@ export default function LoginPage() {
 
           <div className="relative z-10 mt-20 max-w-xl">
             <p className="text-sm font-medium uppercase tracking-[0.18em] text-cyan-300/80">
-              Welcome back
+              Welcome to Tally
             </p>
             <h1 className="mt-5 text-5xl font-semibold tracking-[-0.05em] text-white">
-              Build a hydration habit that feels intentional.
+              Sip. Tap. Track.
             </h1>
-            <p className="mt-6 max-w-lg text-base leading-7 text-slate-300">
-              Track water, log other drinks, monitor trends, and build a profile that
-              supports smarter daily goals from the very first session.
-            </p>
+  
           </div>
 
           <div className="relative z-10 mt-auto grid gap-4">
             <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 backdrop-blur">
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300/75">
-                Why it feels better
+                How it works
               </p>
               <div className="mt-4 grid gap-3 text-sm text-slate-300">
                 <div className="rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
-                  Fast daily logging without clutter.
+                  Log your water intake with a simple tap of the cap.
                 </div>
                 <div className="rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
-                  A private account built for real long-term use.
+                  Visualize trends and progress.
                 </div>
                 <div className="rounded-2xl border border-white/8 bg-black/20 px-4 py-3">
-                  Professional onboarding instead of a throwaway auth screen.
+                  Gain actionable insights to improve health.
                 </div>
               </div>
             </div>
@@ -236,10 +233,10 @@ export default function LoginPage() {
           <div className="w-full max-w-xl">
             <div className="mb-6 lg:hidden">
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-300/90">
-                Water Tracker
+                Tally
               </p>
               <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white">
-                Welcome
+                Sip. Tap. Track.
               </h1>
               <p className="mt-2 text-sm text-slate-400">
                 Sign in to your account or create one in under a minute.
@@ -501,7 +498,6 @@ export default function LoginPage() {
                       <div className="mt-2 space-y-1 text-sm text-slate-400">
                         <p>Password length: {signupPassword.length >= 8 ? "Good" : "Must be 8+ chars"}</p>
                         <p>Passwords match: {signupPasswordsMatch ? "Yes" : "Not yet"}</p>
-                        <p>Username: @{normalizedUsername || "your_username"}</p>
                       </div>
                     </div>
 
