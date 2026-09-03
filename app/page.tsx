@@ -1,18 +1,13 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { HydrationPaceCard } from "@/components/HydrationPaceCard";
+import HydrationPaceCard from "@/components/dashboard/HydrationPaceCard";
 import TopNav from "@/components/top-nav";
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import SnapshotStatsGrid from "@/components/dashboard/SnapshotStatsGrid";
+import HydrationSnapshotCard from "@/components/dashboard/HydrationSnapshotCard";
+import ManualLogCard from "@/components/dashboard/ManualLogCard";
+import TrackerSettingsCard from "@/components/dashboard/TrackerSettingsCard";
+import RecentActivityCard from "@/components/dashboard/RecentActivityCard";
 import { browserSupabase } from "@/lib/supabase-browser";
 
 const defaultDailyGoalOz = 96;
@@ -33,7 +28,7 @@ type WaterEntry = {
   created_at: string;
   amount_oz: number;
   source: "nfc" | "manual";
-  bottle_name: string;
+  bottle_name: string | null;
 };
 
 type FavoriteDrink = {
@@ -49,10 +44,14 @@ type TrackerSettings = {
 };
 
 type TrackerSettingsApiResponse = {
-  daily_goal_oz: number;
-  bottle_size_oz: number;
+  dailyGoalOz?: number;
+  bottleSizeOz?: number;
+  favoriteDrinks?: FavoriteDrink[] | null;
+  daily_goal_oz?: number;
+  bottle_size_oz?: number;
   favorite_drinks?: FavoriteDrink[] | null;
-  updated_at: string;
+  updatedAt?: string;
+  updated_at?: string;
 };
 
 type ProfileApiResponse = {
@@ -100,6 +99,7 @@ function formatToday() {
 
 function getEasternDateKey(value: string | Date) {
   const date = typeof value === "string" ? new Date(value) : value;
+
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
@@ -134,6 +134,7 @@ function parseMonthKey(monthKey: string) {
 
 function formatMonthLabel(monthKey: string) {
   const { year, month } = parseMonthKey(monthKey);
+
   return new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     month: "long",
@@ -162,12 +163,15 @@ function getDaysInMonth(monthKey: string) {
   return new Date(year, month, 0).getDate();
 }
 
-function getMonthGrid(monthKey: string, ouncesByEasternDate: Record<string, number>, todayEastern: string) {
+function getMonthGrid(
+  monthKey: string,
+  ouncesByEasternDate: Record<string, number>,
+  todayEastern: string,
+): CalendarDay[] {
   const { year, month } = parseMonthKey(monthKey);
   const firstDay = new Date(year, month - 1, 1, 12, 0, 0);
   const firstWeekday = firstDay.getDay();
   const daysInMonth = getDaysInMonth(monthKey);
-
   const cells: CalendarDay[] = [];
 
   for (let index = 0; index < firstWeekday; index += 1) {
@@ -206,9 +210,24 @@ function getMonthGrid(monthKey: string, ouncesByEasternDate: Record<string, numb
   return cells;
 }
 
-function normalizeSettings(settings: TrackerSettingsApiResponse): TrackerSettings {
-  const favoriteDrinks = Array.isArray(settings.favorite_drinks)
-    ? settings.favorite_drinks
+function normalizeSettings(settings: TrackerSettingsApiResponse | null | undefined): TrackerSettings {
+  const rawDailyGoal =
+    settings?.dailyGoalOz ??
+    settings?.daily_goal_oz ??
+    defaultDailyGoalOz;
+
+  const rawBottleSize =
+    settings?.bottleSizeOz ??
+    settings?.bottle_size_oz ??
+    defaultBottleSizeOz;
+
+  const rawFavoriteDrinks =
+    settings?.favoriteDrinks ??
+    settings?.favorite_drinks ??
+    [];
+
+  const favoriteDrinks = Array.isArray(rawFavoriteDrinks)
+    ? rawFavoriteDrinks
         .map((drink) => ({
           key: String(drink.key),
           name: String(drink.name),
@@ -223,9 +242,18 @@ function normalizeSettings(settings: TrackerSettingsApiResponse): TrackerSetting
         )
     : [];
 
+  const dailyGoalOz = Number(rawDailyGoal);
+  const bottleSizeOz = Number(rawBottleSize);
+
   return {
-    dailyGoalOz: Number(settings.daily_goal_oz),
-    bottleSizeOz: Number(settings.bottle_size_oz),
+    dailyGoalOz:
+      Number.isFinite(dailyGoalOz) && dailyGoalOz > 0
+        ? dailyGoalOz
+        : defaultDailyGoalOz,
+    bottleSizeOz:
+      Number.isFinite(bottleSizeOz) && bottleSizeOz > 0
+        ? bottleSizeOz
+        : defaultBottleSizeOz,
     favoriteDrinks,
   };
 }
@@ -251,6 +279,7 @@ function calculateCurrentStreak(
 ) {
   let streak = 0;
   const latestDay = days[days.length - 1];
+
   const startIndex =
     latestDay?.dateKey === todayKey && latestDay.ounces < dailyGoalOz
       ? days.length - 2
@@ -271,8 +300,8 @@ function formatOunces(value: number) {
 function buildChartTicks(maxValue: number) {
   const roughStep = maxValue <= 160 ? 40 : maxValue <= 240 ? 50 : 100;
   const top = Math.ceil(maxValue / roughStep) * roughStep;
-
   const ticks: number[] = [];
+
   for (let value = 0; value <= top; value += roughStep) {
     ticks.push(value);
   }
@@ -302,120 +331,6 @@ async function authorizedFetch(
   });
 }
 
-function TrendTooltip({
-  active,
-  payload,
-  dailyGoalOz,
-}: {
-  active?: boolean;
-  payload?: Array<{ payload: TrendDay }>;
-  dailyGoalOz: number;
-}) {
-  if (!active || !payload?.[0]) return null;
-
-  const day = payload[0].payload;
-  const metGoal = day.ounces >= dailyGoalOz;
-
-  return (
-    <div className="rounded-xl border border-white/10 bg-[#151a22] px-3 py-2.5 shadow-2xl">
-      <p className="text-xs font-medium text-slate-400">{day.fullLabel}</p>
-      <p className="mt-1 text-lg font-semibold text-white">{day.ounces} oz</p>
-      <p className={`mt-0.5 text-xs ${metGoal ? "text-emerald-300" : "text-slate-400"}`}>
-        {metGoal
-          ? "Goal reached"
-          : `${Math.max(Math.round(dailyGoalOz - day.ounces), 0)} oz below goal`}
-      </p>
-    </div>
-  );
-}
-
-function CustomDot(props: {
-  cx?: number;
-  cy?: number;
-  payload?: TrendDay;
-}) {
-  const { cx, cy, payload } = props;
-
-  if (typeof cx !== "number" || typeof cy !== "number") return null;
-
-  const isToday = payload?.isToday;
-
-  return (
-    <circle
-      cx={cx}
-      cy={cy}
-      r={isToday ? 5 : 3}
-      fill={isToday ? "#ffffff" : "#0b0e13"}
-      stroke="#67e8f9"
-      strokeWidth={isToday ? 3 : 2}
-    />
-  );
-}
-
-function DayProgressDonut({
-  ounces,
-  goalOz,
-  isToday,
-}: {
-  ounces: number;
-  goalOz: number;
-  isToday: boolean;
-}) {
-  if (ounces <= 0) return null;
-
-  const ratio = Math.min(ounces / Math.max(goalOz, 1), 1);
-  const size = 60;
-  const strokeWidth = 8;
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const dashOffset = circumference * (1 - ratio);
-  const metGoal = ounces >= goalOz;
-
-  return (
-    <div className="relative flex h-[60px] w-[60px] items-center justify-center">
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke="rgba(255,255,255,0.08)"
-          strokeWidth={strokeWidth}
-        />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke={metGoal ? "#34d399" : "#7dd3fc"}
-          strokeWidth={strokeWidth}
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={dashOffset}
-        />
-      </svg>
-
-      {metGoal ? (
-        <div
-          className={`absolute inset-[10px] rounded-full bg-emerald-400 ${
-            isToday ? "ring-2 ring-emerald-200/70" : ""
-          }`}
-        />
-      ) : (
-        <div
-          className={`absolute rounded-full bg-[#0b0e13] ${
-            isToday ? "ring-2 ring-sky-200/60" : ""
-          }`}
-          style={{
-            width: `${Math.max(12, 28 - ratio * 14)}px`,
-            height: `${Math.max(12, 28 - ratio * 14)}px`,
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
 export default function Home() {
   const [entries, setEntries] = useState<WaterEntry[]>([]);
   const [accessToken, setAccessToken] = useState("");
@@ -433,16 +348,14 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [snapshotMode, setSnapshotMode] = useState<SnapshotMode>("7-day");
-  const [selectedMonthKey, setSelectedMonthKey] = useState(() =>
+  const [selectedMonthKey, setSelectedMonthKey] = useState(
     getEasternMonthKey(new Date()),
   );
-
   const [settings, setSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
     favoriteDrinks: [],
   });
-
   const [draftSettings, setDraftSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
@@ -450,19 +363,11 @@ export default function Home() {
   });
 
   const loadDashboardData = useCallback(
-    async (
-      token: string,
-      options?: {
-        mode?: SnapshotMode;
-        monthKey?: string;
-      },
-    ) => {
+    async (token: string, options?: { mode?: SnapshotMode; monthKey?: string }) => {
       const mode = options?.mode ?? snapshotMode;
       const monthKey = options?.monthKey ?? selectedMonthKey;
       const entriesPath =
-        mode === "monthly"
-          ? `/api/water-log?month=${monthKey}`
-          : "/api/water-log?days=7";
+        mode === "monthly" ? `/api/water-log?month=${monthKey}` : "/api/water-log?days=7";
 
       const [entriesResponse, settingsResponse, profileResponse] = await Promise.all([
         authorizedFetch(entriesPath, token),
@@ -476,7 +381,7 @@ export default function Home() {
 
       const entriesData = await entriesResponse.json();
       const settingsData = await settingsResponse.json();
-      const loadedSettings = normalizeSettings(settingsData.settings);
+      const loadedSettings = normalizeSettings(settingsData?.settings);
 
       setEntries(Array.isArray(entriesData.entries) ? entriesData.entries : []);
       setSettings(loadedSettings);
@@ -513,12 +418,13 @@ export default function Home() {
 
         setAccessToken(session.access_token);
         setUserId(session.user.id);
+
         await loadDashboardData(session.access_token, {
           mode: snapshotMode,
           monthKey: selectedMonthKey,
         });
       } catch (error) {
-        console.error("Dashboard initialization failed:", error);
+        console.error("Dashboard initialization failed", error);
         if (isMounted) {
           setErrorMessage("Could not load your hydration data. Please refresh and try again.");
         }
@@ -548,7 +454,7 @@ export default function Home() {
     if (!userId || !accessToken) return;
 
     const channel = browserSupabase
-      .channel(`water-entries:${userId}`)
+      .channel(`water-entries-${userId}`)
       .on(
         "postgres_changes",
         {
@@ -565,7 +471,7 @@ export default function Home() {
         },
       )
       .subscribe((status) => {
-        console.log("Water-entries Realtime status:", status);
+        console.log("Water-entries Realtime status", status);
       });
 
     return () => {
@@ -603,7 +509,6 @@ export default function Home() {
   const weeklyDays: TrendDay[] = Array.from({ length: 7 }, (_, index) => {
     const day = new Date(todayDate);
     day.setDate(todayDate.getDate() - (6 - index));
-
     const dateKey = getEasternDateKey(day);
 
     return {
@@ -643,16 +548,15 @@ export default function Home() {
       : `Daily intake against your ${settings.dailyGoalOz} oz target over the last 7 days.`;
 
   const snapshotTotalOz = snapshotDays.reduce((total, day) => total + day.ounces, 0);
-  const snapshotAverageOz = Math.round(
-    snapshotTotalOz / Math.max(snapshotDays.length, 1),
-  );
+  const snapshotAverageOz = Math.round(snapshotTotalOz / Math.max(snapshotDays.length, 1));
   const snapshotGoalHitCount = snapshotDays.filter(
     (day) => day.ounces >= settings.dailyGoalOz,
   ).length;
-  const bestDay = snapshotDays.reduce(
-    (best, day) => (day.ounces > best.ounces ? day : best),
-    snapshotDays[0],
-  );
+
+  const bestDay =
+    snapshotDays.length > 0
+      ? snapshotDays.reduce((best, day) => (day.ounces > best.ounces ? day : best), snapshotDays[0])
+      : undefined;
 
   const currentStreak =
     snapshotMode === "7-day"
@@ -663,7 +567,6 @@ export default function Home() {
     settings.dailyGoalOz,
     ...weeklyDays.map((day) => day.ounces),
   );
-
   const { top: chartTop, ticks: chartTicks } = buildChartTicks(
     Math.ceil(chartMaximum * 1.15),
   );
@@ -674,21 +577,21 @@ export default function Home() {
 
   const progressCopy =
     currentOz >= settings.dailyGoalOz
-      ? `Daily target complete — ${currentOz} oz logged.`
+      ? `Daily target complete. ${currentOz} oz logged today.`
       : remainingOz <= settings.bottleSizeOz
-        ? "One more bottle gets you to your target."
-        : `${remainingOz} oz to go for today.`;
+        ? `One more bottle gets you to your target. ${remainingOz} oz to go for today.`
+        : `${remainingOz} oz remaining to hit your daily goal.`;
 
   const insightCopy =
     snapshotMode === "monthly"
       ? snapshotAverageOz >= settings.dailyGoalOz
-        ? `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day — ${snapshotAverageOz - settings.dailyGoalOz} oz above target.`
-        : `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day — ${settings.dailyGoalOz - snapshotAverageOz} oz below target.`
+        ? `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day, ${snapshotAverageOz - settings.dailyGoalOz} oz above target.`
+        : `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day, ${settings.dailyGoalOz - snapshotAverageOz} oz below target.`
       : snapshotGoalHitCount === 7
         ? "Perfect week so far. You have reached your target every day."
         : snapshotAverageOz >= settings.dailyGoalOz
-          ? `You are averaging ${snapshotAverageOz} oz per day — ${snapshotAverageOz - settings.dailyGoalOz} oz above target.`
-          : `Your 7-day average is ${snapshotAverageOz} oz — ${settings.dailyGoalOz - snapshotAverageOz} oz below target.`;
+          ? `You are averaging ${snapshotAverageOz} oz per day, ${snapshotAverageOz - settings.dailyGoalOz} oz above target.`
+          : `Your 7-day average is ${snapshotAverageOz} oz, ${settings.dailyGoalOz - snapshotAverageOz} oz below target.`;
 
   const manualAmount = Number(manualAmountOz);
   const trimmedManualDrinkName = (manualDrinkName ?? "").trim();
@@ -740,7 +643,9 @@ export default function Home() {
     try {
       const response = await authorizedFetch("/api/tracker-settings", accessToken, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           dailyGoalOz: Number(settings.dailyGoalOz),
           bottleSizeOz: Number(settings.bottleSizeOz),
@@ -759,6 +664,7 @@ export default function Home() {
 
       const data = await response.json();
       const updatedSettings = normalizeSettings(data.settings);
+
       setSettings(updatedSettings);
       setDraftSettings(updatedSettings);
       setStatusMessage(
@@ -781,24 +687,17 @@ export default function Home() {
     );
   }
 
-  async function logManualBottle(
-    override?: {
-      amountOz?: number;
-      bottleName?: string;
-      clearCustomDrink?: boolean;
-    },
-  ) {
+  async function logManualBottle(override?: {
+    amountOz?: number;
+    bottleName?: string;
+    clearCustomDrink?: boolean;
+  }) {
     const amountToLog = override?.amountOz ?? manualAmount;
     const bottleName =
       override?.bottleName ??
       (trimmedManualDrinkName.length > 0 ? trimmedManualDrinkName : "Manual entry");
 
-    if (
-      !accessToken ||
-      !Number.isFinite(amountToLog) ||
-      amountToLog <= 0 ||
-      amountToLog > 512
-    ) {
+    if (!accessToken || !Number.isFinite(amountToLog) || amountToLog <= 0 || amountToLog > 512) {
       setErrorMessage("Enter an amount between 0.1 and 512 oz.");
       return;
     }
@@ -810,7 +709,9 @@ export default function Home() {
     try {
       const response = await authorizedFetch("/api/water-log", accessToken, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           amountOz: amountToLog,
           source: "manual",
@@ -825,9 +726,11 @@ export default function Home() {
       }
 
       setStatusMessage("Hydration logged.");
+
       if (override?.clearCustomDrink) {
         setManualDrinkName("");
       }
+
       await loadDashboardData(accessToken, {
         mode: snapshotMode,
         monthKey: selectedMonthKey,
@@ -870,7 +773,9 @@ export default function Home() {
       const response = await authorizedFetch(
         `/api/water-log?id=${entryId}`,
         accessToken,
-        { method: "DELETE" },
+        {
+          method: "DELETE",
+        },
       );
 
       const data = await response.json();
@@ -883,6 +788,7 @@ export default function Home() {
         currentEntries.filter((entry) => entry.id !== entryId),
       );
       setStatusMessage("Entry removed.");
+
       await loadDashboardData(accessToken, {
         mode: snapshotMode,
         monthKey: selectedMonthKey,
@@ -898,6 +804,7 @@ export default function Home() {
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
     if (!accessToken) return;
 
     setIsSavingSettings(true);
@@ -907,7 +814,9 @@ export default function Home() {
     try {
       const response = await authorizedFetch("/api/tracker-settings", accessToken, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
           dailyGoalOz: Number(draftSettings.dailyGoalOz),
           bottleSizeOz: Number(draftSettings.bottleSizeOz),
@@ -926,6 +835,7 @@ export default function Home() {
 
       const data = await response.json();
       const updatedSettings = normalizeSettings(data.settings);
+
       setSettings(updatedSettings);
       setDraftSettings(updatedSettings);
       setManualAmountOz(String(updatedSettings.bottleSizeOz));
@@ -984,7 +894,7 @@ export default function Home() {
   if (isLoading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#0b0e13] px-5 text-slate-400">
-        Checking secure session…
+        Checking secure session...
       </main>
     );
   }
@@ -1008,7 +918,7 @@ export default function Home() {
 
           <button
             type="button"
-            onClick={signOut}
+            onClick={() => void signOut()}
             className="rounded-lg border border-white/10 px-3 py-2 text-sm font-medium text-slate-400 transition hover:border-white/20 hover:text-white"
           >
             Sign out
@@ -1017,7 +927,7 @@ export default function Home() {
 
         <TopNav />
 
-        <section className="overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-[#161c26] via-[#111720] to-[#0d1219] shadow-2xl shadow-black/25">
+        <section className="mt-6 rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
           <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[1.35fr_0.65fr] lg:items-end">
             <div>
               <p className="text-sm font-medium text-slate-400">Today&apos;s hydration</p>
@@ -1047,9 +957,12 @@ export default function Home() {
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-200/80">
                 Today&apos;s total
               </p>
+
               {currentOz >= settings.dailyGoalOz ? (
                 <>
-                  <p className="mt-3 text-3xl font-semibold text-emerald-300">Goal complete</p>
+                  <p className="mt-3 text-3xl font-semibold text-emerald-300">
+                    Goal complete
+                  </p>
                   <p className="mt-1 text-sm text-slate-400">
                     {overGoalOz > 0
                       ? `${overGoalOz} oz above your daily target.`
@@ -1071,243 +984,38 @@ export default function Home() {
             dailyGoalOz={settings.dailyGoalOz}
             bottleSizeOz={settings.bottleSizeOz}
             currentOz={currentOz}
+            todayEntries={todayEntries}
           />
         </div>
 
-        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              {snapshotMode === "monthly" ? "Monthly average" : "7-day average"}
-            </p>
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {snapshotAverageOz}
-              <span className="ml-1 text-sm text-slate-500">oz</span>
-            </p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Goal days
-            </p>
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {snapshotGoalHitCount}
-              <span className="text-sm text-slate-500">
-                /{snapshotMode === "monthly" ? snapshotDays.length : 7}
-              </span>
-            </p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              {snapshotMode === "monthly" ? "Monthly total" : "Goal streak"}
-            </p>
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {snapshotMode === "monthly" ? snapshotTotalOz : currentStreak}
-              <span className="ml-1 text-sm text-slate-500">
-                {snapshotMode === "monthly" ? "oz" : "days"}
-              </span>
-            </p>
-          </div>
-          <div className="rounded-xl border border-white/10 bg-[#111720] p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Best day
-            </p>
-            <p className="mt-2 text-2xl font-semibold text-white">
-              {bestDay?.ounces ?? 0}
-              <span className="ml-1 text-sm text-slate-500">oz</span>
-            </p>
-          </div>
-        </section>
+        <SnapshotStatsGrid
+          snapshotMode={snapshotMode}
+          selectedMonthKey={selectedMonthKey}
+          snapshotAverageOz={snapshotAverageOz}
+          snapshotGoalHitCount={snapshotGoalHitCount}
+          snapshotDaysLength={snapshotDays.length}
+          snapshotTotalOz={snapshotTotalOz}
+          currentStreak={currentStreak}
+          bestDay={bestDay}
+          formatMonthLabel={formatMonthLabel}
+        />
 
-        <section className="mt-5 rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">
-                Snapshot
-              </p>
-              <h2 className="mt-2 text-xl font-semibold text-white">{snapshotLabel}</h2>
-              <p className="mt-1 text-sm text-slate-400">{snapshotSubcopy}</p>
-            </div>
-
-            <div className="flex flex-col gap-3 sm:items-end">
-              <div className="inline-flex rounded-lg border border-white/10 bg-[#0b0e13] p-1">
-                <button
-                  type="button"
-                  onClick={() => void switchSnapshotMode("7-day")}
-                  className={`rounded-md px-3 py-2 text-sm font-semibold transition ${
-                    snapshotMode === "7-day"
-                      ? "bg-cyan-300 text-[#071015]"
-                      : "text-slate-300 hover:text-white"
-                  }`}
-                >
-                  7 day
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void switchSnapshotMode("monthly")}
-                  className={`rounded-md px-3 py-2 text-sm font-semibold transition ${
-                    snapshotMode === "monthly"
-                      ? "bg-cyan-300 text-[#071015]"
-                      : "text-slate-300 hover:text-white"
-                  }`}
-                >
-                  Monthly snapshot
-                </button>
-              </div>
-
-              {snapshotMode === "monthly" && (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void jumpMonth("previous")}
-                    disabled={selectedMonthKey <= earliestHistoryMonth}
-                    className="rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    ←
-                  </button>
-                  <div className="min-w-[180px] rounded-lg border border-white/10 px-4 py-2 text-center text-sm font-semibold text-white">
-                    {formatMonthLabel(selectedMonthKey)}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void jumpMonth("next")}
-                    disabled={selectedMonthKey === todayMonthKey}
-                    className="rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    →
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {snapshotMode === "7-day" ? (
-            <div className="mt-6 h-64 sm:h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={weeklyDays} margin={{ top: 10, right: 4, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="hydrationArea" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.38} />
-                      <stop offset="100%" stopColor="#22d3ee" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid vertical={false} stroke="#ffffff" strokeOpacity={0.07} />
-                  <XAxis
-                    dataKey="dateKey"
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#7f8aa0", fontSize: 12 }}
-                    dy={10}
-                    tickFormatter={(value) =>
-                      new Intl.DateTimeFormat("en-US", {
-                        timeZone: "America/New_York",
-                        weekday: "narrow",
-                      }).format(new Date(`${value}T12:00:00`))
-                    }
-                  />
-                  <YAxis
-                    axisLine={false}
-                    tickLine={false}
-                    tick={{ fill: "#7f8aa0", fontSize: 11 }}
-                    domain={[0, chartTop]}
-                    ticks={chartTicks}
-                    allowDecimals={false}
-                  />
-                  <Tooltip
-                    cursor={{ stroke: "#67e8f9", strokeWidth: 1, strokeOpacity: 0.45 }}
-                    content={<TrendTooltip dailyGoalOz={settings.dailyGoalOz} />}
-                  />
-                  <ReferenceLine
-                    y={settings.dailyGoalOz}
-                    stroke="#fbbf24"
-                    strokeDasharray="5 5"
-                    strokeOpacity={0.85}
-                    label={{
-                      value: "Goal",
-                      fill: "#fcd34d",
-                      fontSize: 11,
-                      position: "insideTopRight",
-                    }}
-                  />
-                  <Area
-                    type="linear"
-                    dataKey="ounces"
-                    stroke="#22d3ee"
-                    strokeWidth={3}
-                    fill="url(#hydrationArea)"
-                    activeDot={{ r: 5, fill: "#ffffff", stroke: "#22d3ee", strokeWidth: 3 }}
-                    dot={<CustomDot />}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <div className="mt-6">
-              <div className="grid grid-cols-7 gap-2 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">
-                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
-                  <div key={label} className="py-1">
-                    {label}
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-2 grid grid-cols-7 gap-2">
-                {monthlyCalendarDays.map((day) => (
-                  <div
-                    key={day.dateKey}
-                    className={`min-h-[84px] rounded-xl border p-2 ${
-                      day.isCurrentMonth
-                        ? day.isToday
-                          ? "border-cyan-300/40 bg-cyan-/[0.05]"
-                          : "border-white/10 white/10"
-                        : "border-transparent bg-transparent"
-                    }`}
-                  >
-                    {day.isCurrentMonth && (
-                      <div className="flex h-full flex-col">
-                        <div className="flex items-start justify-between">
-                          <span
-                            className={`text-xs font-semibold ${
-                              day.isToday ? "text-cyan-200" : "text-slate-400"
-                            }`}
-                          >
-                            {day.dayNumber}
-                          </span>
-                          {day.ounces > 0 && (
-                            <span className="text-[10px] font-medium text-slate-500">
-                              {formatOunces(day.ounces)} oz
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="mt-3 flex flex-1 items-center justify-center">
-                          <DayProgressDonut
-                            ounces={day.ounces}
-                            goalOz={settings.dailyGoalOz}
-                            isToday={day.isToday}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-slate-400">
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-3 w-3 rounded-full bg-sky-300" />
-                  <span>Partial progress</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-3 w-3 rounded-full bg-emerald-400" />
-                  <span>Goal reached</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-3 w-3 rounded-full border border-white/20 bg-transparent" />
-                  <span>No log</span>
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
+        <HydrationSnapshotCard
+          snapshotMode={snapshotMode}
+          snapshotLabel={snapshotLabel}
+          snapshotSubcopy={snapshotSubcopy}
+          selectedMonthKey={selectedMonthKey}
+          todayMonthKey={todayMonthKey}
+          earliestHistoryMonth={earliestHistoryMonth}
+          weeklyDays={weeklyDays}
+          monthlyCalendarDays={monthlyCalendarDays}
+          settingsDailyGoalOz={settings.dailyGoalOz}
+          chartTop={chartTop}
+          chartTicks={chartTicks}
+          switchSnapshotMode={switchSnapshotMode}
+          jumpMonth={jumpMonth}
+          formatMonthLabel={formatMonthLabel}
+        />
 
         <section className="mt-5 rounded-xl border border-amber-300/15 bg-amber-300/[0.05] p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-200/80">
@@ -1316,397 +1024,64 @@ export default function Home() {
           <p className="mt-2 text-sm leading-6 text-slate-300">{insightCopy}</p>
         </section>
 
-        <section className="mt-5 rounded-2xl border border-cyan-300/15 bg-[#111720] p-5 sm:p-6">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">
-                Manual log
-              </p>
-              <h2 className="mt-2 text-xl font-semibold text-white">Add hydration</h2>
-              <p className="mt-1 text-sm text-slate-400">
-                Log any amount when you finish a bottle, cup, or refill.
-              </p>
-            </div>
-            <p className="rounded-md border border-white/10 px-3 py-2 text-xs text-slate-400">
-              Your bottle: {settings.bottleSizeOz} oz
-            </p>
-          </div>
+        <ManualLogCard
+          bottleSizeOz={settings.bottleSizeOz}
+          manualDrinkName={manualDrinkName}
+          manualAmountOz={manualAmountOz}
+          trimmedManualDrinkName={trimmedManualDrinkName}
+          canLogManualAmount={canLogManualAmount}
+          isSavingEntry={isSavingEntry}
+          isSavingFavorite={isSavingFavorite}
+          isQuickSelectOpen={isQuickSelectOpen}
+          accessToken={accessToken}
+          quickLogSizes={quickLogSizes}
+          collapsibleQuickDrinks={collapsibleQuickDrinks}
+          favoriteDrinksLength={settings.favoriteDrinks.length}
+          setManualDrinkName={setManualDrinkName}
+          setManualAmountOz={setManualAmountOz}
+          setIsQuickSelectOpen={setIsQuickSelectOpen}
+          onLog={logManualBottle}
+          onFavoriteTypedDrink={favoriteTypedDrink}
+          onRemoveFavoriteDrink={removeFavoriteDrink}
+          onPersistFavoriteDrink={async (drink) => {
+            await persistFavoriteDrinks([
+              ...settings.favoriteDrinks.filter((favorite) => favorite.key !== drink.key),
+              drink,
+            ]);
+          }}
+        />
 
-          <div className="mt-5 flex flex-wrap gap-2">
-            {quickLogSizes.map((item) => {
-              if (item.type === "favorite-drink") {
-                return (
-                  <div
-                    key={item.key}
-                    className="flex items-center overflow-hidden rounded-lg border border-cyan-300/30 bg-cyan-300/[0.08]"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setManualDrinkName(item.drinkName);
-                        setManualAmountOz(String(item.amountOz));
-                      }}
-                      className="px-3 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/[0.08]"
-                    >
-                      {item.label}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void removeFavoriteDrink(item.drinkKey)}
-                      disabled={isSavingFavorite || !accessToken}
-                      className="border-l border-cyan-300/20 px-2.5 py-2 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-300/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
-                      aria-label={`Remove favorite ${item.drinkName}`}
-                    >
-                      ★
-                    </button>
-                  </div>
-                );
-              }
+        <TrackerSettingsCard
+          settings={settings}
+          draftSettings={draftSettings}
+          isSettingsOpen={isSettingsOpen}
+          isSavingSettings={isSavingSettings}
+          setIsSettingsOpen={setIsSettingsOpen}
+          setDraftSettings={setDraftSettings}
+          saveSettings={saveSettings}
+          cancelSettings={cancelSettings}
+        />
 
-              const isSelected =
-                Number(manualAmountOz) === item.amountOz && !trimmedManualDrinkName;
-
-              return (
-                <button
-                  key={item.key}
-                  type="button"
-                  onClick={() => {
-                    setManualAmountOz(String(item.amountOz));
-                    setManualDrinkName("");
-                  }}
-                  className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
-                    isSelected
-                      ? "border-cyan-300 bg-cyan-300 text-[#071015]"
-                      : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/20 hover:text-white"
-                  }`}
-                >
-                  {item.label}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="mt-4 flex flex-col gap-3 lg:flex-row">
-            <label className="relative flex-[1.2]">
-              <span className="sr-only">Drink name</span>
-              <input
-                type="text"
-                maxLength={80}
-                value={manualDrinkName}
-                onChange={(event) => setManualDrinkName(event.target.value)}
-                placeholder="Drink name (optional)"
-                className="w-full rounded-lg border border-white/10 bg-[#0b0e13] px-4 py-3 text-sm font-medium text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
-                aria-label="Drink name"
-              />
-            </label>
-
-            <label className="relative flex-1">
-              <span className="sr-only">Custom ounces</span>
-              <input
-                type="number"
-                min="0.1"
-                max="512"
-                step="0.1"
-                value={manualAmountOz}
-                onChange={(event) => setManualAmountOz(event.target.value)}
-                className="w-full rounded-lg border border-white/10 bg-[#0b0e13] px-4 py-3 pr-12 text-lg font-semibold text-white outline-none transition focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
-                aria-label="Custom ounces"
-              />
-              <span className="pointer-events-none absolute right-4 top-3.5 text-sm font-medium text-slate-500">
-                oz
-              </span>
-            </label>
-
-            <button
-              type="button"
-              onClick={() =>
-                void logManualBottle({
-                  clearCustomDrink: trimmedManualDrinkName.length > 0,
-                })
-              }
-              disabled={isSavingEntry || !accessToken || !canLogManualAmount}
-              className="rounded-lg bg-cyan-300 px-6 py-3 text-sm font-bold text-[#071015] transition hover:bg-cyan-200 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isSavingEntry ? "Logging…" : `Log ${canLogManualAmount ? formatOunces(manualAmount) : ""} oz`}
-            </button>
-          </div>
-
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={() => setIsQuickSelectOpen((current) => !current)}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-white/20 hover:text-white"
-              aria-expanded={isQuickSelectOpen}
-            >
-              <span>{isQuickSelectOpen ? "Hide quick select drinks" : "Quick select drinks"}</span>
-              <span className="text-xs text-slate-500">{isQuickSelectOpen ? "−" : "+"}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void favoriteTypedDrink()}
-              disabled={
-                isSavingFavorite ||
-                !accessToken ||
-                !trimmedManualDrinkName ||
-                !canLogManualAmount
-              }
-              className="rounded-lg border border-white/10 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Favorite typed drink
-            </button>
-          </div>
-
-          {isQuickSelectOpen && (
-            <div className="mt-4 rounded-xl border border-white/10 bg-[#0b0e13] p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                  Quick select
-                </p>
-                {isSavingFavorite && (
-                  <span className="text-xs text-slate-500">Saving favorite…</span>
-                )}
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                {collapsibleQuickDrinks.map((drink) => (
-                  <div
-                    key={drink.key}
-                    className="flex items-center overflow-hidden rounded-lg border border-white/10 bg-white/[0.03]"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setManualDrinkName(drink.name);
-                        setManualAmountOz(String(drink.amountOz));
-                      }}
-                      disabled={isSavingEntry || !accessToken}
-                      className="px-3 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {drink.name} · {formatOunces(drink.amountOz)} oz
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void persistFavoriteDrinks([
-                          ...settings.favoriteDrinks.filter((favorite) => favorite.key !== drink.key),
-                          {
-                            key: drink.key,
-                            name: drink.name,
-                            amountOz: drink.amountOz,
-                          },
-                        ])
-                      }
-                      disabled={isSavingFavorite || !accessToken}
-                      aria-label={`Favorite ${drink.name}`}
-                      className="border-l border-white/10 px-2.5 py-2 text-xs font-semibold text-slate-500 transition hover:bg-white/[0.04] hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      ☆
-                    </button>
-                  </div>
-                ))}
-              </div>
-
-              <p className="mt-3 text-xs text-slate-500">
-                Favorite one drink to pin it above with your core quick-add buttons. These logs do
-                not change your water target yet.
-              </p>
-            </div>
-          )}
-        </section>
-
-        
-
-        <section className="mt-5 rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                Tracker settings
-              </p>
-              <p className="mt-2 text-sm text-slate-300">
-                {settings.bottleSizeOz} oz bottle · {settings.dailyGoalOz} oz daily goal
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setIsSettingsOpen((isOpen) => !isOpen)}
-              className="rounded-lg border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white"
-            >
-              {isSettingsOpen ? "Close" : "Edit"}
-            </button>
-          </div>
-
-          {isSettingsOpen && (
-            <form className="mt-6 space-y-4 border-t border-white/10 pt-5" onSubmit={saveSettings}>
-              <div className="grid grid-cols-2 gap-4">
-                <label className="block">
-                  <span className="text-sm font-medium text-slate-300">Daily goal (oz)</span>
-                  <input
-                    type="number"
-                    min="16"
-                    max="512"
-                    step="1"
-                    value={draftSettings.dailyGoalOz}
-                    onChange={(event) =>
-                      setDraftSettings((currentSettings) => ({
-                        ...currentSettings,
-                        dailyGoalOz: Number(event.target.value),
-                      }))
-                    }
-                    required
-                    className="mt-2 w-full rounded-lg border border-white/10 bg-[#0b0e13] px-3 py-2.5 text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-sm font-medium text-slate-300">Bottle size (oz)</span>
-                  <input
-                    type="number"
-                    min="4"
-                    max="128"
-                    step="1"
-                    value={draftSettings.bottleSizeOz}
-                    onChange={(event) =>
-                      setDraftSettings((currentSettings) => ({
-                        ...currentSettings,
-                        bottleSizeOz: Number(event.target.value),
-                      }))
-                    }
-                    required
-                    className="mt-2 w-full rounded-lg border border-white/10 bg-[#0b0e13] px-3 py-2.5 text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-300/20"
-                  />
-                </label>
-              </div>
-
-              <div className="rounded-xl border border-white/10 bg-[#0b0e13] p-4">
-                <p className="text-sm font-medium text-white">Favorite quick adds</p>
-                <p className="mt-1 text-sm text-slate-400">
-                  Favorite drinks from the dashboard quick select area. They stay pinned across
-                  future sessions until removed.
-                </p>
-
-                {draftSettings.favoriteDrinks.length > 0 ? (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {draftSettings.favoriteDrinks.map((drink) => (
-                      <div
-                        key={drink.key}
-                        className="flex items-center gap-2 rounded-lg border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2"
-                      >
-                        <p className="text-sm text-slate-200">
-                          {drink.name} · {formatOunces(drink.amountOz)} oz
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setDraftSettings((currentSettings) => ({
-                              ...currentSettings,
-                              favoriteDrinks: currentSettings.favoriteDrinks.filter(
-                                (favorite) => favorite.key !== drink.key,
-                              ),
-                            }))
-                          }
-                          className="rounded-md border border-white/10 px-2 py-1 text-xs font-semibold text-slate-300 transition hover:border-white/20 hover:text-white"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mt-3 text-sm text-slate-500">No favorite drinks selected yet.</p>
-                )}
-              </div>
-
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="submit"
-                  disabled={isSavingSettings}
-                  className="flex-1 rounded-lg bg-cyan-300 px-4 py-3 text-sm font-bold text-[#071015] transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isSavingSettings ? "Saving…" : "Save settings"}
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelSettings}
-                  disabled={isSavingSettings}
-                  className="rounded-lg border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          )}
-        </section>
-
-        {statusMessage && (
+        {statusMessage ? (
           <p className="mt-5 rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-4 py-3 text-sm font-medium text-emerald-200">
             {statusMessage}
           </p>
-        )}
+        ) : null}
 
-        {errorMessage && (
+        {errorMessage ? (
           <p className="mt-5 rounded-lg border border-red-300/20 bg-red-300/10 px-4 py-3 text-sm font-medium text-red-200">
             {errorMessage}
           </p>
-        )}
+        ) : null}
 
-        <section className="mt-8 pb-8">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-                Recent activity
-              </p>
-              <h2 className="mt-1 text-xl font-semibold text-white">Today&apos;s log</h2>
-            </div>
-            <span className="text-sm text-slate-500">{todayEntries.length} entries</span>
-          </div>
-
-          <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-[#111720]">
-            {todayEntries.length === 0 && (
-              <p className="px-5 py-10 text-center text-sm text-slate-500">
-                No water logged yet. Finish your first bottle and tap the tag.
-              </p>
-            )}
-
-            {todayEntries.map((entry) => (
-              <div
-                key={entry.id}
-                className="flex items-center justify-between gap-4 border-b border-white/10 px-5 py-4 last:border-b-0"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium text-white">
-                    {formatOunces(Number(entry.amount_oz))} oz
-                  </p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {entry.bottle_name && entry.bottle_name !== "Manual entry"
-                      ? `${entry.bottle_name} · ${formatTime(entry.created_at)}`
-                      : formatTime(entry.created_at)}
-                  </p>
-                </div>
-
-                <div className="flex shrink-0 items-center gap-3">
-                  <span
-                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                      entry.source === "nfc"
-                        ? "bg-cyan-300/10 text-cyan-200"
-                        : "bg-white/10 text-slate-300"
-                    }`}
-                  >
-                    {entry.source.toUpperCase()}
-                  </span>
-
-                  <button
-                    type="button"
-                    onClick={() => deleteEntry(entry.id)}
-                    disabled={isDeleting || !accessToken}
-                    className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-1.5 text-xs font-semibold text-red-200 transition hover:border-red-400/40 hover:bg-red-400/15 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+        <RecentActivityCard
+          todayEntries={todayEntries}
+          isDeleting={isDeleting}
+          accessToken={accessToken}
+          formatTime={formatTime}
+          formatOunces={formatOunces}
+          deleteEntry={deleteEntry}
+        />
       </div>
     </main>
   );
