@@ -24,7 +24,12 @@ type SimpleCheckpoint = {
 };
 
 type PaceState = "behind" | "on-pace" | "ahead" | "goal-complete";
-type CheckpointStatus = "upcoming" | "active" | "complete" | "close-missed" | "missed";
+type CheckpointStatus =
+  | "upcoming"
+  | "active"
+  | "complete"
+  | "close-missed"
+  | "missed";
 
 type EvaluatedCheckpoint = SimpleCheckpoint & {
   ouncesByCheckpoint: number;
@@ -343,10 +348,10 @@ export default function HydrationPaceCard({
     [bottleSizeOz, currentOz, dailyGoalOz, targetNow.targetOz],
   );
 
-  const evaluatedCheckpoints = useMemo(() => {
+  const evaluatedCheckpoints = useMemo<EvaluatedCheckpoint[]>(() => {
     const nowMinutes = getEasternMinutesIntoDay(new Date());
 
-    const base = checkpoints.map((checkpoint) => {
+    const base: EvaluatedCheckpoint[] = checkpoints.map((checkpoint) => {
       const checkpointMinutes = checkpoint.hour24 * 60;
       const ouncesByCheckpoint = getOuncesByCheckpoint(checkpoint, todayEntries);
       const deficitOz = Math.max(checkpoint.targetOz - ouncesByCheckpoint, 0);
@@ -358,7 +363,10 @@ export default function HydrationPaceCard({
           status = "complete";
         } else {
           const completionRatio =
-            checkpoint.targetOz > 0 ? ouncesByCheckpoint / checkpoint.targetOz : 0;
+            checkpoint.targetOz > 0
+              ? ouncesByCheckpoint / checkpoint.targetOz
+              : 0;
+
           status = completionRatio >= 0.85 ? "close-missed" : "missed";
         }
       }
@@ -371,7 +379,9 @@ export default function HydrationPaceCard({
       };
     });
 
-    const activeIndex = base.findIndex((checkpoint) => checkpoint.status === "upcoming");
+    const activeIndex = base.findIndex(
+      (checkpoint) => checkpoint.status === "upcoming",
+    );
 
     if (activeIndex !== -1) {
       base[activeIndex] = {
@@ -382,7 +392,6 @@ export default function HydrationPaceCard({
 
     return base;
   }, [checkpoints, todayEntries]);
-
   const activeCheckpoint =
     evaluatedCheckpoints.find((checkpoint) => checkpoint.status === "active") ??
     evaluatedCheckpoints[evaluatedCheckpoints.length - 1];

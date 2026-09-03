@@ -553,10 +553,13 @@ export default function Home() {
     (day) => day.ounces >= settings.dailyGoalOz,
   ).length;
 
-  const bestDay =
-    snapshotDays.length > 0
-      ? snapshotDays.reduce((best, day) => (day.ounces > best.ounces ? day : best), snapshotDays[0])
-      : undefined;
+  const bestDay: TrendDay | undefined =
+    snapshotMode === "monthly"
+      ? undefined
+      : weeklyDays.reduce<TrendDay | undefined>((best, day) => {
+          if (!best || day.ounces > best.ounces) return day;
+          return best;
+        }, undefined);
 
   const currentStreak =
     snapshotMode === "7-day"
