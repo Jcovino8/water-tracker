@@ -22,11 +22,17 @@ async function getOwnerUser(
 ): Promise<AuthorizedUser | null> {
   const authorizationHeader = request.headers.get("authorization");
 
-  if (!authorizationHeader?.startsWith("Bearer ") || !ownerEmail) {
+  if (!authorizationHeader?.startsWith("Bearer ")) {
     return null;
   }
 
-  const accessToken = authorizationHeader.slice("Bearer ".length);
+  const accessToken = authorizationHeader
+    .slice("Bearer ".length)
+    .trim();
+
+  if (!accessToken) {
+    return null;
+  }
 
   const {
     data: { user },
@@ -37,7 +43,7 @@ async function getOwnerUser(
     return null;
   }
 
-  if (user.email.toLowerCase() !== ownerEmail) {
+  if (!user.email_confirmed_at) {
     return null;
   }
 

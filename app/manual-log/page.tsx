@@ -494,6 +494,7 @@ export default function ManualLogPage() {
             onRemoveFavoriteDrink={removeFavoriteDrink}
             onAttachMixIn={attachMixIn}
           />
+          
         </div>
 
         {statusMessage ? (

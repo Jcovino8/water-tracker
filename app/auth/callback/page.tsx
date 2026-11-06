@@ -74,7 +74,12 @@ export default function AuthCallbackPage() {
       );
 
       if (!cancelled) {
-        router.replace("/");
+        const destination =
+          queryParams.get("next") === "/reset-password"
+            ? "/reset-password"
+            : "/";
+
+        router.replace(destination);
       }
     }
 

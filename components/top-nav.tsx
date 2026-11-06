@@ -5,7 +5,8 @@ import { usePathname } from "next/navigation";
 
 const tabs = [
   { href: "/", label: "Dashboard" },
-  { href: "/social", label: "Social" },
+  { href: "/manual-log", label: "Manual Log" },
+  { href: "/achievements", label: "Achievements" },
   { href: "/profile", label: "Profile" },
 ];
 
@@ -13,25 +14,28 @@ export default function TopNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="mb-8 flex border-b border-white/10">
-      {tabs.map((tab) => {
-        const isActive =
-          tab.href === "/" ? pathname === "/" : pathname.startsWith(tab.href);
+    <nav className="mt-6">
+      <div className="inline-flex rounded-xl border border-white/10 bg-[#111720] p-1.5 shadow-lg shadow-black/20">
+        {tabs.map((tab) => {
+          const isActive =
+            tab.href === "/" ? pathname === "/" : pathname.startsWith(tab.href);
 
-        return (
-          <Link
-            key={tab.href}
-            href={tab.href}
-            className={
-              isActive
-                ? "border-b-2 border-cyan-400 px-1 pb-3 pr-6 text-sm font-semibold text-white"
-                : "px-1 pb-3 pr-6 text-sm font-medium text-slate-500 transition hover:text-slate-300"
-            }
-          >
-            {tab.label}
-          </Link>
-        );
-      })}
+          return (
+            <Link
+              key={tab.href}
+              href={tab.href}
+              className={[
+                "rounded-lg px-4 py-2.5 text-sm font-semibold transition",
+                isActive
+                  ? "bg-cyan-300 text-[#071015]"
+                  : "text-slate-400 hover:bg-white/5 hover:text-white",
+              ].join(" ")}
+            >
+              {tab.label}
+            </Link>
+          );
+        })}
+      </div>
     </nav>
   );
 }

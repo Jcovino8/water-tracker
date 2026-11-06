@@ -5,7 +5,6 @@ import HydrationPaceCard from "@/components/dashboard/HydrationPaceCard";
 import TopNav from "@/components/top-nav";
 import SnapshotStatsGrid from "@/components/dashboard/SnapshotStatsGrid";
 import HydrationSnapshotCard from "@/components/dashboard/HydrationSnapshotCard";
-import ManualLogCard from "@/components/dashboard/ManualLogCard";
 import TrackerSettingsCard from "@/components/dashboard/TrackerSettingsCard";
 import RecentActivityCard from "@/components/dashboard/RecentActivityCard";
 import { browserSupabase } from "@/lib/supabase-browser";
@@ -1026,33 +1025,6 @@ export default function Home() {
           </p>
           <p className="mt-2 text-sm leading-6 text-slate-300">{insightCopy}</p>
         </section>
-
-        <ManualLogCard
-          bottleSizeOz={settings.bottleSizeOz}
-          manualDrinkName={manualDrinkName}
-          manualAmountOz={manualAmountOz}
-          trimmedManualDrinkName={trimmedManualDrinkName}
-          canLogManualAmount={canLogManualAmount}
-          isSavingEntry={isSavingEntry}
-          isSavingFavorite={isSavingFavorite}
-          isQuickSelectOpen={isQuickSelectOpen}
-          accessToken={accessToken}
-          quickLogSizes={quickLogSizes}
-          collapsibleQuickDrinks={collapsibleQuickDrinks}
-          favoriteDrinksLength={settings.favoriteDrinks.length}
-          setManualDrinkName={setManualDrinkName}
-          setManualAmountOz={setManualAmountOz}
-          setIsQuickSelectOpen={setIsQuickSelectOpen}
-          onLog={logManualBottle}
-          onFavoriteTypedDrink={favoriteTypedDrink}
-          onRemoveFavoriteDrink={removeFavoriteDrink}
-          onPersistFavoriteDrink={async (drink) => {
-            await persistFavoriteDrinks([
-              ...settings.favoriteDrinks.filter((favorite) => favorite.key !== drink.key),
-              drink,
-            ]);
-          }}
-        />
 
         <TrackerSettingsCard
           settings={settings}
