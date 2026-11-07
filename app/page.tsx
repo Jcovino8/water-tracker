@@ -1,6 +1,8 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
+
 import HydrationPaceCard from "@/components/dashboard/HydrationPaceCard";
 import TopNav from "@/components/top-nav";
 import SnapshotStatsGrid from "@/components/dashboard/SnapshotStatsGrid";
@@ -13,14 +15,7 @@ const defaultDailyGoalOz = 96;
 const defaultBottleSizeOz = 25;
 const commonBottleSizes = [16.9, 20, 25];
 const earliestHistoryMonth = "2026-08";
-
-const quickDrinkPresets = [
-  { key: "coffee", name: "Black coffee", amountOz: 8 },
-  { key: "espresso", name: "Espresso", amountOz: 2 },
-  { key: "seltzer", name: "Seltzer", amountOz: 12 },
-  { key: "sparkling-water", name: "Sparkling water", amountOz: 16.9 },
-  { key: "green-tea", name: "Green tea", amountOz: 12 },
-] as const;
+const trackerTimeZone = "America/New_York";
 
 type WaterEntry = {
   id: string;
@@ -79,28 +74,69 @@ type CalendarDay = {
   isCurrentMonth: boolean;
 };
 
-function formatTime(timestamp: string) {
+type ManualLogOverride = {
+  amountOz?: number;
+  bottleName?: string;
+  clearCustomDrink?: boolean;
+};
+
+
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+async function readResponseBody(
+  response: Response,
+): Promise<Record<string, unknown>> {
+  const body: unknown = await response.json();
+  return isRecord(body) ? body : {};
+}
+
+function responseError(
+  body: Record<string, unknown>,
+  fallback: string,
+): string {
+  return typeof body.error === "string" ? body.error : fallback;
+}
+
+function isWaterEntry(value: unknown): value is WaterEntry {
+  if (!isRecord(value)) return false;
+
+  return (
+    typeof value.id === "string" &&
+    typeof value.created_at === "string" &&
+    Number.isFinite(Date.parse(value.created_at)) &&
+    typeof value.amount_oz === "number" &&
+    Number.isFinite(value.amount_oz) &&
+    value.amount_oz > 0 &&
+    (value.source === "nfc" || value.source === "manual") &&
+    (value.bottle_name === null || typeof value.bottle_name === "string")
+  );
+}
+
+function formatTime(timestamp: string): string {
   return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
+    timeZone: trackerTimeZone,
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(timestamp));
 }
 
-function formatToday() {
+function formatToday(): string {
   return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
+    timeZone: trackerTimeZone,
     weekday: "long",
     month: "long",
     day: "numeric",
   }).format(new Date());
 }
 
-function getEasternDateKey(value: string | Date) {
+function getEasternDateKey(value: string | Date): string {
   const date = typeof value === "string" ? new Date(value) : value;
 
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
+    timeZone: trackerTimeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -113,53 +149,47 @@ function getEasternDateKey(value: string | Date) {
   return `${year}-${month}-${day}`;
 }
 
-function getEasternMonthKey(date: Date) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-  }).formatToParts(date);
-
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-
-  return `${year}-${month}`;
+function getEasternMonthKey(date: Date): string {
+  return getEasternDateKey(date).slice(0, 7);
 }
 
-function parseMonthKey(monthKey: string) {
+function parseMonthKey(monthKey: string): {
+  year: number;
+  month: number;
+} {
   const [year, month] = monthKey.split("-").map(Number);
   return { year, month };
 }
 
-function formatMonthLabel(monthKey: string) {
+function formatMonthLabel(monthKey: string): string {
   const { year, month } = parseMonthKey(monthKey);
 
   return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
+    timeZone: "UTC",
     month: "long",
     year: "numeric",
-  }).format(new Date(year, month - 1, 1, 12, 0, 0));
+  }).format(new Date(Date.UTC(year, month - 1, 1, 12)));
 }
 
-function getPreviousMonthKey(monthKey: string) {
+function getPreviousMonthKey(monthKey: string): string {
   const { year, month } = parseMonthKey(monthKey);
-  const date = new Date(year, month - 2, 1, 12, 0, 0);
-  return getEasternMonthKey(date);
+  const date = new Date(Date.UTC(year, month - 2, 1, 12));
+  return date.toISOString().slice(0, 7);
 }
 
-function getNextMonthKey(monthKey: string) {
+function getNextMonthKey(monthKey: string): string {
   const { year, month } = parseMonthKey(monthKey);
-  const date = new Date(year, month, 1, 12, 0, 0);
-  return getEasternMonthKey(date);
+  const date = new Date(Date.UTC(year, month, 1, 12));
+  return date.toISOString().slice(0, 7);
 }
 
-function isFutureMonth(monthKey: string) {
+function isFutureMonth(monthKey: string): boolean {
   return monthKey > getEasternMonthKey(new Date());
 }
 
-function getDaysInMonth(monthKey: string) {
+function getDaysInMonth(monthKey: string): number {
   const { year, month } = parseMonthKey(monthKey);
-  return new Date(year, month, 0).getDate();
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
 function getMonthGrid(
@@ -168,8 +198,10 @@ function getMonthGrid(
   todayEastern: string,
 ): CalendarDay[] {
   const { year, month } = parseMonthKey(monthKey);
-  const firstDay = new Date(year, month - 1, 1, 12, 0, 0);
-  const firstWeekday = firstDay.getDay();
+  const firstWeekday = new Date(
+    Date.UTC(year, month - 1, 1, 12),
+  ).getUTCDay();
+
   const daysInMonth = getDaysInMonth(monthKey);
   const cells: CalendarDay[] = [];
 
@@ -184,8 +216,7 @@ function getMonthGrid(
   }
 
   for (let dayNumber = 1; dayNumber <= daysInMonth; dayNumber += 1) {
-    const date = new Date(year, month - 1, dayNumber, 12, 0, 0);
-    const dateKey = getEasternDateKey(date);
+    const dateKey = `${monthKey}-${String(dayNumber).padStart(2, "0")}`;
 
     cells.push({
       dateKey,
@@ -209,40 +240,50 @@ function getMonthGrid(
   return cells;
 }
 
-function normalizeSettings(settings: TrackerSettingsApiResponse | null | undefined): TrackerSettings {
-  const rawDailyGoal =
-    settings?.dailyGoalOz ??
-    settings?.daily_goal_oz ??
-    defaultDailyGoalOz;
+function normalizeSettings(value: unknown): TrackerSettings {
+  const settings = isRecord(value) ? value : {};
 
-  const rawBottleSize =
-    settings?.bottleSizeOz ??
-    settings?.bottle_size_oz ??
-    defaultBottleSizeOz;
+  const dailyGoalOz = Number(
+    settings.dailyGoalOz ??
+      settings.daily_goal_oz ??
+      defaultDailyGoalOz,
+  );
+
+  const bottleSizeOz = Number(
+    settings.bottleSizeOz ??
+      settings.bottle_size_oz ??
+      defaultBottleSizeOz,
+  );
 
   const rawFavoriteDrinks =
-    settings?.favoriteDrinks ??
-    settings?.favorite_drinks ??
-    [];
+    settings.favoriteDrinks ?? settings.favorite_drinks ?? [];
 
-  const favoriteDrinks = Array.isArray(rawFavoriteDrinks)
-    ? rawFavoriteDrinks
-        .map((drink) => ({
-          key: String(drink.key),
-          name: String(drink.name),
-          amountOz: Number(drink.amountOz),
-        }))
-        .filter(
-          (drink) =>
-            drink.key.trim().length > 0 &&
-            drink.name.trim().length > 0 &&
-            Number.isFinite(drink.amountOz) &&
-            drink.amountOz > 0,
-        )
-    : [];
+  const favoriteDrinks: FavoriteDrink[] = [];
 
-  const dailyGoalOz = Number(rawDailyGoal);
-  const bottleSizeOz = Number(rawBottleSize);
+  if (Array.isArray(rawFavoriteDrinks)) {
+    for (const value of rawFavoriteDrinks) {
+      if (!isRecord(value)) continue;
+      if (typeof value.key !== "string") continue;
+      if (typeof value.name !== "string") continue;
+
+      const amountOz = Number(value.amountOz);
+
+      if (
+        !value.key.trim() ||
+        !value.name.trim() ||
+        !Number.isFinite(amountOz) ||
+        amountOz <= 0
+      ) {
+        continue;
+      }
+
+      favoriteDrinks.push({
+        key: value.key,
+        name: value.name,
+        amountOz,
+      });
+    }
+  }
 
   return {
     dailyGoalOz:
@@ -257,10 +298,10 @@ function normalizeSettings(settings: TrackerSettingsApiResponse | null | undefin
   };
 }
 
-function greetingForCurrentTime() {
+function greetingForCurrentTime(): string {
   const hour = Number(
     new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/New_York",
+      timeZone: trackerTimeZone,
       hour: "numeric",
       hourCycle: "h23",
     }).format(new Date()),
@@ -275,7 +316,7 @@ function calculateCurrentStreak(
   days: TrendDay[],
   dailyGoalOz: number,
   todayKey: string,
-) {
+): number {
   let streak = 0;
   const latestDay = days[days.length - 1];
 
@@ -292,11 +333,14 @@ function calculateCurrentStreak(
   return streak;
 }
 
-function formatOunces(value: number) {
+function formatOunces(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-function buildChartTicks(maxValue: number) {
+function buildChartTicks(maxValue: number): {
+  top: number;
+  ticks: number[];
+} {
   const roughStep = maxValue <= 160 ? 40 : maxValue <= 240 ? 50 : 100;
   const top = Math.ceil(maxValue / roughStep) * roughStep;
   const ticks: number[] = [];
@@ -308,7 +352,7 @@ function buildChartTicks(maxValue: number) {
   return { top, ticks };
 }
 
-function slugifyDrinkKey(name: string, amountOz: number) {
+function slugifyDrinkKey(name: string, amountOz: number): string {
   return `${name
     .trim()
     .toLowerCase()
@@ -320,13 +364,13 @@ async function authorizedFetch(
   path: string,
   accessToken: string,
   options: RequestInit = {},
-) {
+): Promise<Response> {
+  const headers = new Headers(options.headers);
+  headers.set("Authorization", `Bearer ${accessToken}`);
+
   return fetch(path, {
     ...options,
-    headers: {
-      ...options.headers,
-      Authorization: `Bearer ${accessToken}`,
-    },
+    headers,
   });
 }
 
@@ -335,26 +379,33 @@ export default function Home() {
   const [accessToken, setAccessToken] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
-  const [manualAmountOz, setManualAmountOz] = useState(String(defaultBottleSizeOz));
+
+  const [manualAmountOz, setManualAmountOz] = useState(
+    String(defaultBottleSizeOz),
+  );
   const [manualDrinkName, setManualDrinkName] = useState("");
-  const [isQuickSelectOpen, setIsQuickSelectOpen] = useState(false);
+
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingEntry, setIsSavingEntry] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isSavingFavorite, setIsSavingFavorite] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
   const [errorMessage, setErrorMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
+
   const [snapshotMode, setSnapshotMode] = useState<SnapshotMode>("7-day");
   const [selectedMonthKey, setSelectedMonthKey] = useState(
     getEasternMonthKey(new Date()),
   );
+
   const [settings, setSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
     favoriteDrinks: [],
   });
+
   const [draftSettings, setDraftSettings] = useState<TrackerSettings>({
     dailyGoalOz: defaultDailyGoalOz,
     bottleSizeOz: defaultBottleSizeOz,
@@ -362,34 +413,58 @@ export default function Home() {
   });
 
   const loadDashboardData = useCallback(
-    async (token: string, options?: { mode?: SnapshotMode; monthKey?: string }) => {
+    async (
+      token: string,
+      options?: { mode?: SnapshotMode; monthKey?: string },
+    ): Promise<void> => {
       const mode = options?.mode ?? snapshotMode;
       const monthKey = options?.monthKey ?? selectedMonthKey;
-      const entriesPath =
-        mode === "monthly" ? `/api/water-log?month=${monthKey}` : "/api/water-log?days=7";
 
-      const [entriesResponse, settingsResponse, profileResponse] = await Promise.all([
-        authorizedFetch(entriesPath, token),
-        authorizedFetch("/api/tracker-settings", token),
-        authorizedFetch("/api/profile", token),
-      ]);
+      const entriesPath =
+        mode === "monthly"
+          ? `/api/water-log?month=${encodeURIComponent(monthKey)}`
+          : "/api/water-log?days=7";
+
+      const [entriesResponse, settingsResponse, profileResponse] =
+        await Promise.all([
+          authorizedFetch(entriesPath, token),
+          authorizedFetch("/api/tracker-settings", token),
+          authorizedFetch("/api/profile", token),
+        ]);
 
       if (!entriesResponse.ok || !settingsResponse.ok) {
         throw new Error("Unable to load tracker data.");
       }
 
-      const entriesData = await entriesResponse.json();
-      const settingsData = await settingsResponse.json();
-      const loadedSettings = normalizeSettings(settingsData?.settings);
+      const entriesData = await readResponseBody(entriesResponse);
+      const settingsData = await readResponseBody(settingsResponse);
+      const loadedSettings = normalizeSettings(settingsData.settings);
 
-      setEntries(Array.isArray(entriesData.entries) ? entriesData.entries : []);
+      const rawEntries = entriesData.entries;
+      const loadedEntries = Array.isArray(rawEntries)
+        ? rawEntries.filter(isWaterEntry)
+        : [];
+
+      setEntries(loadedEntries);
       setSettings(loadedSettings);
       setDraftSettings(loadedSettings);
 
       if (profileResponse.ok) {
-        const profileData = (await profileResponse.json()) as ProfileApiResponse;
-        const profile = profileData.profile;
-        setDisplayName(profile?.display_name?.trim() || profile?.username?.trim() || "");
+        const profileData: unknown = await profileResponse.json();
+
+        if (isRecord(profileData) && isRecord(profileData.profile)) {
+          const profile = profileData.profile;
+          const name =
+            typeof profile.display_name === "string"
+              ? profile.display_name.trim()
+              : "";
+          const username =
+            typeof profile.username === "string"
+              ? profile.username.trim()
+              : "";
+
+          setDisplayName(name || username);
+        }
       }
     },
     [selectedMonthKey, snapshotMode],
@@ -399,7 +474,7 @@ export default function Home() {
     let isMounted = true;
     let loadingTimeout: number | undefined;
 
-    async function initializeDashboard() {
+    async function initializeDashboard(): Promise<void> {
       try {
         const {
           data: { session },
@@ -424,8 +499,11 @@ export default function Home() {
         });
       } catch (error) {
         console.error("Dashboard initialization failed", error);
+
         if (isMounted) {
-          setErrorMessage("Could not load your hydration data. Please refresh and try again.");
+          setErrorMessage(
+            "Could not load your hydration data. Please refresh and try again.",
+          );
         }
       } finally {
         if (isMounted) {
@@ -437,7 +515,10 @@ export default function Home() {
 
     loadingTimeout = window.setTimeout(() => {
       if (!isMounted) return;
-      setErrorMessage("The dashboard took too long to load. Please refresh and try again.");
+
+      setErrorMessage(
+        "The dashboard took too long to load. Please refresh and try again.",
+      );
       setIsLoading(false);
     }, 10000);
 
@@ -445,9 +526,24 @@ export default function Home() {
 
     return () => {
       isMounted = false;
-      if (loadingTimeout) window.clearTimeout(loadingTimeout);
+      window.clearTimeout(loadingTimeout);
     };
   }, [loadDashboardData, selectedMonthKey, snapshotMode]);
+
+  useEffect(() => {
+    const {
+      data: { subscription },
+    } = browserSupabase.auth.onAuthStateChange((_event, session) => {
+      setAccessToken(session?.access_token ?? "");
+      setUserId(session?.user.id ?? null);
+
+      if (!session) {
+        window.location.replace("/login");
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     if (!userId || !accessToken) return;
@@ -466,17 +562,26 @@ export default function Home() {
           void loadDashboardData(accessToken, {
             mode: snapshotMode,
             monthKey: selectedMonthKey,
+          }).catch((error: unknown) => {
+            console.error("Realtime dashboard refresh failed", error);
+            setErrorMessage(
+              "Could not refresh your hydration data. Please refresh the page.",
+            );
           });
         },
       )
-      .subscribe((status) => {
-        console.log("Water-entries Realtime status", status);
-      });
+      .subscribe();
 
     return () => {
       void browserSupabase.removeChannel(channel);
     };
-  }, [accessToken, loadDashboardData, selectedMonthKey, snapshotMode, userId]);
+  }, [
+    accessToken,
+    loadDashboardData,
+    selectedMonthKey,
+    snapshotMode,
+    userId,
+  ]);
 
   const todayEastern = getEasternDateKey(new Date());
   const todayMonthKey = getEasternMonthKey(new Date());
@@ -486,68 +591,95 @@ export default function Home() {
   );
 
   const currentOz = todayEntries.reduce(
-    (total, entry) => total + Number(entry.amount_oz),
+    (total, entry) => total + entry.amount_oz,
     0,
   );
 
-  const remainingOz = Math.max(Math.round(settings.dailyGoalOz - currentOz), 0);
-  const overGoalOz = Math.max(Math.round(currentOz - settings.dailyGoalOz), 0);
+  const remainingOz = Math.max(
+    Math.round(settings.dailyGoalOz - currentOz),
+    0,
+  );
+
+  const overGoalOz = Math.max(
+    Math.round(currentOz - settings.dailyGoalOz),
+    0,
+  );
+
   const progressPercent = Math.min(
     Math.round((currentOz / settings.dailyGoalOz) * 100),
     100,
   );
 
-  const ouncesByEasternDate = entries.reduce<Record<string, number>>((totals, entry) => {
-    const entryDateKey = getEasternDateKey(entry.created_at);
-    totals[entryDateKey] = (totals[entryDateKey] ?? 0) + Number(entry.amount_oz);
-    return totals;
-  }, {});
+  const ouncesByEasternDate = useMemo(() => {
+    return entries.reduce<Record<string, number>>((totals, entry) => {
+      const dateKey = getEasternDateKey(entry.created_at);
 
-  const todayDate = new Date();
+      totals[dateKey] = (totals[dateKey] ?? 0) + entry.amount_oz;
+      return totals;
+    }, {});
+  }, [entries]);
 
-  const weeklyDays: TrendDay[] = Array.from({ length: 7 }, (_, index) => {
-    const day = new Date(todayDate);
-    day.setDate(todayDate.getDate() - (6 - index));
-    const dateKey = getEasternDateKey(day);
+  const weeklyDays = useMemo<TrendDay[]>(() => {
+    const [year, month, dayNumber] = todayEastern.split("-").map(Number);
 
-    return {
-      dateKey,
-      label: new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/New_York",
+    return Array.from({ length: 7 }, (_, index) => {
+      const day = new Date(
+        Date.UTC(year, month - 1, dayNumber - (6 - index), 12),
+      );
+
+      const dateKey = day.toISOString().slice(0, 10);
+
+      const label = new Intl.DateTimeFormat("en-US", {
+        timeZone: "UTC",
         weekday: "narrow",
-      }).format(day),
-      fullLabel: new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/New_York",
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-      }).format(day),
-      ounces: ouncesByEasternDate[dateKey] ?? 0,
-      isToday: dateKey === todayEastern,
-      xLabel: `${dateKey}-${new Intl.DateTimeFormat("en-US", {
-        timeZone: "America/New_York",
-        weekday: "narrow",
-      }).format(day)}`,
-    };
-  });
+      }).format(day);
 
-  const monthlyCalendarDays = useMemo(() => {
-    return getMonthGrid(selectedMonthKey, ouncesByEasternDate, todayEastern);
-  }, [ouncesByEasternDate, selectedMonthKey, todayEastern]);
+      return {
+        dateKey,
+        label,
+        fullLabel: new Intl.DateTimeFormat("en-US", {
+          timeZone: "UTC",
+          weekday: "short",
+          month: "short",
+          day: "numeric",
+        }).format(day),
+        ounces: ouncesByEasternDate[dateKey] ?? 0,
+        isToday: dateKey === todayEastern,
+        xLabel: `${dateKey}-${label}`,
+      };
+    });
+  }, [ouncesByEasternDate, todayEastern]);
 
-  const monthlyActiveDays = useMemo(() => {
-    return monthlyCalendarDays.filter((day) => day.isCurrentMonth);
-  }, [monthlyCalendarDays]);
+  const monthlyCalendarDays = useMemo(
+    () => getMonthGrid(selectedMonthKey, ouncesByEasternDate, todayEastern),
+    [ouncesByEasternDate, selectedMonthKey, todayEastern],
+  );
 
-  const snapshotDays = snapshotMode === "monthly" ? monthlyActiveDays : weeklyDays;
-  const snapshotLabel = snapshotMode === "monthly" ? "Monthly snapshot" : "7 day snapshot";
+  const monthlyActiveDays = useMemo(
+    () => monthlyCalendarDays.filter((day) => day.isCurrentMonth),
+    [monthlyCalendarDays],
+  );
+
+  const snapshotDays =
+    snapshotMode === "monthly" ? monthlyActiveDays : weeklyDays;
+
+  const snapshotLabel =
+    snapshotMode === "monthly" ? "Monthly snapshot" : "7 day snapshot";
+
   const snapshotSubcopy =
     snapshotMode === "monthly"
       ? `Calendar view for ${formatMonthLabel(selectedMonthKey)}. Each day fills toward your ${settings.dailyGoalOz} oz goal.`
       : `Daily intake against your ${settings.dailyGoalOz} oz target over the last 7 days.`;
 
-  const snapshotTotalOz = snapshotDays.reduce((total, day) => total + day.ounces, 0);
-  const snapshotAverageOz = Math.round(snapshotTotalOz / Math.max(snapshotDays.length, 1));
+  const snapshotTotalOz = snapshotDays.reduce(
+    (total, day) => total + day.ounces,
+    0,
+  );
+
+  const snapshotAverageOz = Math.round(
+    snapshotTotalOz / Math.max(snapshotDays.length, 1),
+  );
+
   const snapshotGoalHitCount = snapshotDays.filter(
     (day) => day.ounces >= settings.dailyGoalOz,
   ).length;
@@ -562,13 +694,18 @@ export default function Home() {
 
   const currentStreak =
     snapshotMode === "7-day"
-      ? calculateCurrentStreak(weeklyDays, settings.dailyGoalOz, todayEastern)
+      ? calculateCurrentStreak(
+          weeklyDays,
+          settings.dailyGoalOz,
+          todayEastern,
+        )
       : 0;
 
   const chartMaximum = Math.max(
     settings.dailyGoalOz,
     ...weeklyDays.map((day) => day.ounces),
   );
+
   const { top: chartTop, ticks: chartTicks } = buildChartTicks(
     Math.ceil(chartMaximum * 1.15),
   );
@@ -579,7 +716,7 @@ export default function Home() {
 
   const progressCopy =
     currentOz >= settings.dailyGoalOz
-      ? `Daily target complete. ${currentOz} oz logged today.`
+      ? `Daily target complete. ${formatOunces(currentOz)} oz logged today.`
       : remainingOz <= settings.bottleSizeOz
         ? `One more bottle gets you to your target. ${remainingOz} oz to go for today.`
         : `${remainingOz} oz remaining to hit your daily goal.`;
@@ -587,38 +724,37 @@ export default function Home() {
   const insightCopy =
     snapshotMode === "monthly"
       ? snapshotAverageOz >= settings.dailyGoalOz
-        ? `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day, ${snapshotAverageOz - settings.dailyGoalOz} oz above target.`
-        : `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day, ${settings.dailyGoalOz - snapshotAverageOz} oz below target.`
+        ? `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day, ${formatOunces(snapshotAverageOz - settings.dailyGoalOz)} oz above target.`
+        : `Your ${formatMonthLabel(selectedMonthKey)} average is ${snapshotAverageOz} oz per day, ${formatOunces(settings.dailyGoalOz - snapshotAverageOz)} oz below target.`
       : snapshotGoalHitCount === 7
         ? "Perfect week so far. You have reached your target every day."
         : snapshotAverageOz >= settings.dailyGoalOz
-          ? `You are averaging ${snapshotAverageOz} oz per day, ${snapshotAverageOz - settings.dailyGoalOz} oz above target.`
-          : `Your 7-day average is ${snapshotAverageOz} oz, ${settings.dailyGoalOz - snapshotAverageOz} oz below target.`;
+          ? `You are averaging ${snapshotAverageOz} oz per day, ${formatOunces(snapshotAverageOz - settings.dailyGoalOz)} oz above target.`
+          : `Your 7-day average is ${snapshotAverageOz} oz, ${formatOunces(settings.dailyGoalOz - snapshotAverageOz)} oz below target.`;
 
   const manualAmount = Number(manualAmountOz);
-  const trimmedManualDrinkName = (manualDrinkName ?? "").trim();
-  const canLogManualAmount =
-    Number.isFinite(manualAmount) && manualAmount > 0 && manualAmount <= 512;
+  const trimmedManualDrinkName = manualDrinkName.trim();
 
-  const favoriteDrinkPresets = useMemo(() => {
-    return settings.favoriteDrinks.map((drink) => ({
-      key: drink.key,
-      name: drink.name,
-      amountOz: drink.amountOz,
-    }));
-  }, [settings.favoriteDrinks]);
+  const canLogManualAmount =
+    Number.isFinite(manualAmount) &&
+    manualAmount >= 0.1 &&
+    manualAmount <= 512;
 
   const quickLogSizes = useMemo(() => {
-    const sizeButtons = Array.from(new Set([...commonBottleSizes, settings.bottleSizeOz]))
+    const sizeButtons = Array.from(
+      new Set([...commonBottleSizes, settings.bottleSizeOz]),
+    )
       .sort((a, b) => a - b)
       .map((size) => ({
         type: "size" as const,
         key: `size-${size}`,
-        label: `${formatOunces(size)} oz${size === settings.bottleSizeOz ? " · My bottle" : ""}`,
+        label: `${formatOunces(size)} oz${
+          size === settings.bottleSizeOz ? " · My bottle" : ""
+        }`,
         amountOz: size,
       }));
 
-    const favoriteButtons = favoriteDrinkPresets.map((drink) => ({
+    const favoriteButtons = settings.favoriteDrinks.map((drink) => ({
       type: "favorite-drink" as const,
       key: `favorite-${drink.key}`,
       label: `${drink.name} · ${formatOunces(drink.amountOz)} oz`,
@@ -628,43 +764,40 @@ export default function Home() {
     }));
 
     return [...sizeButtons, ...favoriteButtons];
-  }, [favoriteDrinkPresets, settings.bottleSizeOz]);
+  }, [settings.bottleSizeOz, settings.favoriteDrinks]);
 
-  const collapsibleQuickDrinks = useMemo(() => {
-    const favoriteKeys = new Set(settings.favoriteDrinks.map((drink) => drink.key));
-    return quickDrinkPresets.filter((drink) => !favoriteKeys.has(drink.key));
-  }, [settings.favoriteDrinks]);
-
-  async function persistFavoriteDrinks(nextFavoriteDrinks: FavoriteDrink[]) {
-    if (!accessToken) return;
+  async function persistFavoriteDrinks(
+    nextFavoriteDrinks: FavoriteDrink[],
+  ): Promise<void> {
+    if (!accessToken || isSavingFavorite) return;
 
     setIsSavingFavorite(true);
     setErrorMessage("");
     setStatusMessage("");
 
     try {
-      const response = await authorizedFetch("/api/tracker-settings", accessToken, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
+      const response = await authorizedFetch(
+        "/api/tracker-settings",
+        accessToken,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            dailyGoalOz: settings.dailyGoalOz,
+            bottleSizeOz: settings.bottleSizeOz,
+            favoriteDrinks: nextFavoriteDrinks,
+          }),
         },
-        body: JSON.stringify({
-          dailyGoalOz: Number(settings.dailyGoalOz),
-          bottleSizeOz: Number(settings.bottleSizeOz),
-          favoriteDrinks: nextFavoriteDrinks.map((drink) => ({
-            key: drink.key,
-            name: drink.name,
-            amountOz: drink.amountOz,
-          })),
-        }),
-      });
+      );
+
+      const data = await readResponseBody(response);
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Unable to save favorite drinks.");
+        throw new Error(
+          responseError(data, "Unable to save favorite drinks."),
+        );
       }
 
-      const data = await response.json();
       const updatedSettings = normalizeSettings(data.settings);
 
       setSettings(updatedSettings);
@@ -672,34 +805,44 @@ export default function Home() {
       setStatusMessage(
         nextFavoriteDrinks.length > settings.favoriteDrinks.length
           ? "Drink added to favorites."
-          : "Favorite drink removed.",
+          : nextFavoriteDrinks.length < settings.favoriteDrinks.length
+            ? "Favorite drink removed."
+            : "Favorite drinks updated.",
       );
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : "Could not save favorite drinks.",
+        error instanceof Error
+          ? error.message
+          : "Could not save favorite drinks.",
       );
     } finally {
       setIsSavingFavorite(false);
     }
   }
 
-  async function removeFavoriteDrink(drinkKey: string) {
+  async function removeFavoriteDrink(drinkKey: string): Promise<void> {
     await persistFavoriteDrinks(
       settings.favoriteDrinks.filter((drink) => drink.key !== drinkKey),
     );
   }
 
-  async function logManualBottle(override?: {
-    amountOz?: number;
-    bottleName?: string;
-    clearCustomDrink?: boolean;
-  }) {
+  async function logManualBottle(
+    override?: ManualLogOverride,
+  ): Promise<void> {
+    if (isSavingEntry) return;
+
     const amountToLog = override?.amountOz ?? manualAmount;
+
     const bottleName =
       override?.bottleName ??
-      (trimmedManualDrinkName.length > 0 ? trimmedManualDrinkName : "Manual entry");
+      (trimmedManualDrinkName || "Manual entry");
 
-    if (!accessToken || !Number.isFinite(amountToLog) || amountToLog <= 0 || amountToLog > 512) {
+    if (
+      !accessToken ||
+      !Number.isFinite(amountToLog) ||
+      amountToLog < 0.1 ||
+      amountToLog > 512
+    ) {
       setErrorMessage("Enter an amount between 0.1 and 512 oz.");
       return;
     }
@@ -709,22 +852,26 @@ export default function Home() {
     setStatusMessage("");
 
     try {
-      const response = await authorizedFetch("/api/water-log", accessToken, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+      const response = await authorizedFetch(
+        "/api/water-log",
+        accessToken,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amountOz: amountToLog,
+            source: "manual",
+            bottleName,
+          }),
         },
-        body: JSON.stringify({
-          amountOz: amountToLog,
-          source: "manual",
-          bottleName,
-        }),
-      });
+      );
 
-      const data = await response.json();
+      const data = await readResponseBody(response);
 
       if (!response.ok) {
-        throw new Error(data.error || "Unable to save water entry.");
+        throw new Error(
+          responseError(data, "Unable to save water entry."),
+        );
       }
 
       setStatusMessage("Hydration logged.");
@@ -733,39 +880,55 @@ export default function Home() {
         setManualDrinkName("");
       }
 
-      await loadDashboardData(accessToken, {
-        mode: snapshotMode,
-        monthKey: selectedMonthKey,
-      });
+      try {
+        await loadDashboardData(accessToken, {
+          mode: snapshotMode,
+          monthKey: selectedMonthKey,
+        });
+      } catch {
+        setErrorMessage(
+          "Your entry was saved, but the dashboard could not refresh. Refresh the page before logging it again.",
+        );
+      }
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : "Could not save hydration entry.",
+        error instanceof Error
+          ? error.message
+          : "Could not save hydration entry.",
       );
     } finally {
       setIsSavingEntry(false);
     }
   }
 
-  async function favoriteTypedDrink() {
+  async function favoriteTypedDrink(): Promise<void> {
     if (!trimmedManualDrinkName || !canLogManualAmount) {
-      setErrorMessage("Enter a drink name and a valid ounce amount to favorite it.");
+      setErrorMessage(
+        "Enter a drink name and a valid ounce amount to favorite it.",
+      );
       return;
     }
 
-    const nextFavorite = {
-      key: slugifyDrinkKey(trimmedManualDrinkName, manualAmount),
+    const roundedAmount = Number(manualAmount.toFixed(1));
+
+    const nextFavorite: FavoriteDrink = {
+      key: slugifyDrinkKey(trimmedManualDrinkName, roundedAmount),
       name: trimmedManualDrinkName,
-      amountOz: Number(manualAmount.toFixed(1)),
+      amountOz: roundedAmount,
     };
 
     await persistFavoriteDrinks([
-      ...settings.favoriteDrinks.filter((drink) => drink.key !== nextFavorite.key),
+      ...settings.favoriteDrinks.filter(
+        (drink) => drink.key !== nextFavorite.key,
+      ),
       nextFavorite,
     ]);
   }
 
-  async function deleteEntry(entryId: string) {
-    if (!accessToken) return;
+  
+
+  async function deleteEntry(entryId: string): Promise<void> {
+    if (!accessToken || isDeleting) return;
 
     setIsDeleting(true);
     setErrorMessage("");
@@ -773,69 +936,91 @@ export default function Home() {
 
     try {
       const response = await authorizedFetch(
-        `/api/water-log?id=${entryId}`,
+        `/api/water-log?id=${encodeURIComponent(entryId)}`,
         accessToken,
-        {
-          method: "DELETE",
-        },
+        { method: "DELETE" },
       );
 
-      const data = await response.json();
+      const data = await readResponseBody(response);
 
       if (!response.ok) {
-        throw new Error(data.error || "Unable to delete water entry.");
+        throw new Error(
+          responseError(data, "Unable to delete water entry."),
+        );
       }
 
       setEntries((currentEntries) =>
         currentEntries.filter((entry) => entry.id !== entryId),
       );
+
       setStatusMessage("Entry removed.");
 
-      await loadDashboardData(accessToken, {
-        mode: snapshotMode,
-        monthKey: selectedMonthKey,
-      });
+      try {
+        await loadDashboardData(accessToken, {
+          mode: snapshotMode,
+          monthKey: selectedMonthKey,
+        });
+      } catch {
+        setErrorMessage(
+          "The entry was removed, but the dashboard could not refresh.",
+        );
+      }
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : "Could not delete this entry.",
+        error instanceof Error
+          ? error.message
+          : "Could not delete this entry.",
       );
     } finally {
       setIsDeleting(false);
     }
   }
 
-  async function saveSettings(event: FormEvent<HTMLFormElement>) {
+  async function saveSettings(
+    event: FormEvent<HTMLFormElement>,
+  ): Promise<void> {
     event.preventDefault();
 
-    if (!accessToken) return;
+    if (!accessToken || isSavingSettings) return;
+
+    const dailyGoalOz = Number(draftSettings.dailyGoalOz);
+    const bottleSizeOz = Number(draftSettings.bottleSizeOz);
+
+    if (
+      !Number.isFinite(dailyGoalOz) ||
+      dailyGoalOz <= 0 ||
+      !Number.isFinite(bottleSizeOz) ||
+      bottleSizeOz <= 0
+    ) {
+      setErrorMessage("Enter a valid daily goal and bottle size.");
+      return;
+    }
 
     setIsSavingSettings(true);
     setErrorMessage("");
     setStatusMessage("");
 
     try {
-      const response = await authorizedFetch("/api/tracker-settings", accessToken, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
+      const response = await authorizedFetch(
+        "/api/tracker-settings",
+        accessToken,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            dailyGoalOz,
+            bottleSizeOz,
+            favoriteDrinks: draftSettings.favoriteDrinks,
+          }),
         },
-        body: JSON.stringify({
-          dailyGoalOz: Number(draftSettings.dailyGoalOz),
-          bottleSizeOz: Number(draftSettings.bottleSizeOz),
-          favoriteDrinks: draftSettings.favoriteDrinks.map((drink) => ({
-            key: drink.key,
-            name: drink.name,
-            amountOz: drink.amountOz,
-          })),
-        }),
-      });
+      );
+
+      const data = await readResponseBody(response);
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Unable to save settings.");
+        throw new Error(responseError(data, "Unable to save settings."));
       }
 
-      const data = await response.json();
       const updatedSettings = normalizeSettings(data.settings);
 
       setSettings(updatedSettings);
@@ -845,52 +1030,57 @@ export default function Home() {
       setStatusMessage("Tracker settings saved.");
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : "Could not save tracker settings.",
+        error instanceof Error
+          ? error.message
+          : "Could not save tracker settings.",
       );
     } finally {
       setIsSavingSettings(false);
     }
   }
 
-  function cancelSettings() {
+  function cancelSettings(): void {
     setDraftSettings(settings);
     setIsSettingsOpen(false);
   }
 
-  async function signOut() {
-    await browserSupabase.auth.signOut();
-    window.location.replace("/login");
+  async function signOut(): Promise<void> {
+    try {
+      const { error } = await browserSupabase.auth.signOut();
+      if (error) throw error;
+
+      window.location.replace("/login");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not sign out.",
+      );
+    }
   }
 
-  async function switchSnapshotMode(nextMode: SnapshotMode) {
-    setSnapshotMode(nextMode);
-
-    if (!accessToken) return;
-
+  async function switchSnapshotMode(
+    nextMode: SnapshotMode,
+  ): Promise<void> {
     setErrorMessage("");
-    await loadDashboardData(accessToken, {
-      mode: nextMode,
-      monthKey: selectedMonthKey,
-    });
+    setSnapshotMode(nextMode);
   }
 
-  async function jumpMonth(direction: "previous" | "next") {
+  async function jumpMonth(
+    direction: "previous" | "next",
+  ): Promise<void> {
     const nextMonthKey =
       direction === "previous"
         ? getPreviousMonthKey(selectedMonthKey)
         : getNextMonthKey(selectedMonthKey);
 
-    if (isFutureMonth(nextMonthKey) || nextMonthKey < earliestHistoryMonth) return;
-
-    setSelectedMonthKey(nextMonthKey);
-
-    if (!accessToken) return;
+    if (
+      isFutureMonth(nextMonthKey) ||
+      nextMonthKey < earliestHistoryMonth
+    ) {
+      return;
+    }
 
     setErrorMessage("");
-    await loadDashboardData(accessToken, {
-      mode: "monthly",
-      monthKey: nextMonthKey,
-    });
+    setSelectedMonthKey(nextMonthKey);
   }
 
   if (isLoading) {
@@ -912,9 +1102,11 @@ export default function Home() {
                 Tally
               </p>
             </div>
+
             <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
               {greeting}
             </h1>
+
             <p className="mt-2 text-sm text-slate-400">{formatToday()}</p>
           </div>
 
@@ -932,13 +1124,19 @@ export default function Home() {
         <section className="mt-6 rounded-2xl border border-white/10 bg-[#111720] p-5 sm:p-6">
           <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[1.35fr_0.65fr] lg:items-end">
             <div>
-              <p className="text-sm font-medium text-slate-400">Today&apos;s hydration</p>
+              <p className="text-sm font-medium text-slate-400">
+                Today&apos;s hydration
+              </p>
+
               <div className="mt-3 flex items-end gap-3">
                 <p className="text-6xl font-semibold tracking-[-0.06em] text-white sm:text-7xl">
-                  {currentOz}
+                  {formatOunces(currentOz)}
                 </p>
-                <p className="mb-2 text-xl font-medium text-slate-500">oz</p>
+                <p className="mb-2 text-xl font-medium text-slate-500">
+                  oz
+                </p>
               </div>
+
               <p className="mt-4 text-sm text-slate-300">{progressCopy}</p>
 
               <div className="mt-7">
@@ -948,6 +1146,7 @@ export default function Home() {
                     style={{ width: `${progressPercent}%` }}
                   />
                 </div>
+
                 <div className="mt-3 flex justify-between text-xs font-medium text-slate-500">
                   <span>{progressPercent}% of target</span>
                   <span>{settings.dailyGoalOz} oz goal</span>
@@ -965,6 +1164,7 @@ export default function Home() {
                   <p className="mt-3 text-3xl font-semibold text-emerald-300">
                     Goal complete
                   </p>
+
                   <p className="mt-1 text-sm text-slate-400">
                     {overGoalOz > 0
                       ? `${overGoalOz} oz above your daily target.`
@@ -973,8 +1173,12 @@ export default function Home() {
                 </>
               ) : (
                 <>
-                  <p className="mt-3 text-3xl font-semibold text-white">{remainingOz} oz</p>
-                  <p className="mt-1 text-sm text-slate-400">remaining to hit your goal</p>
+                  <p className="mt-3 text-3xl font-semibold text-white">
+                    {remainingOz} oz
+                  </p>
+                  <p className="mt-1 text-sm text-slate-400">
+                    remaining to hit your goal
+                  </p>
                 </>
               )}
             </div>
@@ -989,6 +1193,8 @@ export default function Home() {
             todayEntries={todayEntries}
           />
         </div>
+
+      
 
         <SnapshotStatsGrid
           snapshotMode={snapshotMode}
@@ -1023,7 +1229,9 @@ export default function Home() {
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-200/80">
             Hydration insight
           </p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">{insightCopy}</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">
+            {insightCopy}
+          </p>
         </section>
 
         <TrackerSettingsCard
@@ -1038,13 +1246,19 @@ export default function Home() {
         />
 
         {statusMessage ? (
-          <p className="mt-5 rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-4 py-3 text-sm font-medium text-emerald-200">
+          <p
+            role="status"
+            className="mt-5 rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-4 py-3 text-sm font-medium text-emerald-200"
+          >
             {statusMessage}
           </p>
         ) : null}
 
         {errorMessage ? (
-          <p className="mt-5 rounded-lg border border-red-300/20 bg-red-300/10 px-4 py-3 text-sm font-medium text-red-200">
+          <p
+            role="alert"
+            className="mt-5 rounded-lg border border-red-300/20 bg-red-300/10 px-4 py-3 text-sm font-medium text-red-200"
+          >
             {errorMessage}
           </p>
         ) : null}
